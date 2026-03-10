@@ -51,10 +51,6 @@ classdef SRNNModel2 < cRNN
         reps = 1                    % Repetition index
     end
 
-    %% SRNN Results (packed state)
-    properties (SetAccess = protected)
-        S_out                       % State trajectory (nt x N_sys_eqs)
-    end
 
     %% SRNN Dependent Properties
     properties (Dependent)
@@ -178,11 +174,8 @@ classdef SRNNModel2 < cRNN
             %
             % Returns n × T matrix of firing rates [r_E; r_I].
 
-            if isempty(obj.S_out) && ~isempty(obj.state_out)
-                % Use state_out from cRNN
+            if ~isempty(obj.state_out)
                 S = obj.state_out;
-            elseif ~isempty(obj.S_out)
-                S = obj.S_out;
             else
                 error('SRNNModel2:NoState', 'No state data available.');
             end
@@ -280,7 +273,7 @@ classdef SRNNModel2 < cRNN
             % Usage:
             %   model.plot_eigenvalues([5, 10, 15])  % Times in seconds
 
-            if isempty(obj.S_out)
+            if isempty(obj.state_out)
                 error('SRNNModel:NoStateData', 'State data required. Set store_full_state=true.');
             end
 
@@ -288,10 +281,10 @@ classdef SRNNModel2 < cRNN
 
             % Convert times to indices
             J_times = round((J_times_sec - obj.t_out(1)) * obj.fs) + 1;
-            J_times = unique(max(1, min(J_times, size(obj.S_out, 1))));
+            J_times = unique(max(1, min(J_times, size(obj.state_out, 1))));
 
             fprintf('Computing Jacobian at %d time points\n', length(J_times));
-            J_array = SRNNModel2.compute_Jacobian_at_indices(obj.S_out, J_times, params);
+            J_array = SRNNModel2.compute_Jacobian_at_indices(obj.state_out, J_times, params);
 
             % Compute eigenvalues
             n_plots = length(J_times);
@@ -516,7 +509,7 @@ classdef SRNNModel2 < cRNN
             params = obj.cached_params;
 
             % Decimate
-            [t_plot, S_plot, plot_indices] = obj.decimate_states(obj.t_out, obj.S_out, obj.plot_deci);
+            [t_plot, S_plot, plot_indices] = obj.decimate_states(obj.t_out, obj.state_out, obj.plot_deci);
 
             % Unpack state vector and compute firing rates
             [x_plot, a_plot, b_plot, r_plot, br_plot] = obj.unpack_and_compute_states(S_plot, params);

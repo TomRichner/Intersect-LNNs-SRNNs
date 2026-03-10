@@ -1,13 +1,18 @@
 function setup_paths()
-% SETUP_PATHS Add src/ directory to MATLAB path for LNN scripts.
+% SETUP_PATHS Add src/ directories to MATLAB path for SRNN scripts.
 %
-% Adds the src/ directory (containing SRNNModel2.m, RMTMatrix.m)
-% to the MATLAB path using the location of this script as reference.
+% Adds SRNN/src/ (SRNNModel2) and shared/src/ (cRNN, Activation,
+% Stimulus, RMTMatrix) to the MATLAB path.
 
     script_dir = fileparts(mfilename('fullpath'));
-    project_dir = fileparts(script_dir);  % Go up from scripts/ to LNN/
+    project_dir = fileparts(script_dir);  % Go up from scripts/ to SRNN/
+    matlab_dir = fileparts(project_dir);  % Go up from SRNN/ to Matlab/
+
     src_dir = fullfile(project_dir, 'src');
+    shared_src = fullfile(matlab_dir, 'shared', 'src');
 
     addpath(genpath(src_dir));
     fprintf('Added to path: %s\n', src_dir);
+    addpath(genpath(shared_src));
+    fprintf('Added to path: %s\n', shared_src);
 end

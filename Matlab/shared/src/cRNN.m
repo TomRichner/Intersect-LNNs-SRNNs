@@ -173,7 +173,9 @@ classdef (Abstract) cRNN < handle
 
         initialize_state(obj)
         % INITIALIZE_STATE Set obj.S0 for initial conditions.
+    end
 
+    methods (Abstract, Access = protected)
         decimate_and_unpack(obj)
         % DECIMATE_AND_UNPACK Model-specific decimation into plot_data.
     end
