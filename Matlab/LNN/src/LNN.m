@@ -20,6 +20,7 @@ classdef LNN < cRNN
     properties
         n_in = 2                    % Input dimension
         activation_name = 'tanh'    % Legacy name: 'tanh', 'sigmoid', 'piecewise_sigmoid', 'relu'
+        readout_mode = 'state'      % ESN readout: 'state', 'nonlinearity', 'full'
     end
 
     %% LTC Parameter Initialization
@@ -118,13 +119,28 @@ classdef LNN < cRNN
         end
 
         function features = get_readout_features(obj)
-            % GET_READOUT_FEATURES Return n × T matrix of raw states.
+            % GET_READOUT_FEATURES Return readout feature matrix (n_features × T).
             %
-            % For LNN, the readout features are the raw state values x.
-            if ~isempty(obj.state_out)
-                features = obj.state_out';  % n × T
-            else
+            % Output depends on obj.readout_mode:
+            %   'state' (default)    — x (n × T)
+            %   'nonlinearity'       — f = activation(W*x + W_in*I + mu) (n × T)
+            %   'full'               — [x; f] (2n × T)
+
+            if isempty(obj.state_out)
                 error('LNN:NoState', 'No state data available.');
+            end
+
+            switch obj.readout_mode
+                case 'state'
+                    features = obj.state_out';  % n × T
+                case 'nonlinearity'
+                    features = obj.compute_nonlinearity();  % n × T
+                case 'full'
+                    features = [obj.state_out'; obj.compute_nonlinearity()];  % 2n × T
+                otherwise
+                    error('LNN:UnknownReadoutMode', ...
+                        'Unknown readout_mode: ''%s''. Valid: state, nonlinearity, full', ...
+                        obj.readout_mode);
             end
         end
 
@@ -310,6 +326,25 @@ classdef LNN < cRNN
         end
     end
 
+    %% Private Helper Methods
+    methods (Access = protected)
+        function f_out = compute_nonlinearity(obj)
+            % COMPUTE_NONLINEARITY Compute f = activation(W*x + W_in*I + mu) for all timesteps.
+            %
+            % Returns n × T matrix.
+
+            params = obj.cached_params;
+            T_total = size(obj.state_out, 1);
+            f_out = zeros(obj.n, T_total);
+
+            for k = 1:T_total
+                I_k = obj.u_interpolant(obj.t_out(k))';
+                z = params.W * obj.state_out(k,:)' + params.W_in * I_k + params.mu;
+                f_out(:, k) = params.activation.apply(z);
+            end
+        end
+    end
+
     %% Protected Build Sub-Methods (LNN overrides)
     methods (Access = protected)
         function build_network(obj)
@@ -346,13 +381,17 @@ classdef LNN < cRNN
 
             params = obj.cached_params;
 
+            % Detect input dimension from interpolant (may differ from n_in for ESN)
+            I_test = obj.u_interpolant(t_d(1))';
+            n_input_dim = length(I_test);
+
             % Compute u, f, tau_sys at decimated times
-            u_d = zeros(nt_d, params.n_in);
+            u_d = zeros(nt_d, n_input_dim);
             f_d = zeros(nt_d, params.n);
             tau_sys_d = zeros(nt_d, params.n);
 
             for k = 1:nt_d
-                I_k = obj.u_interpolant(t_d(k))';  % (n_in × 1)
+                I_k = obj.u_interpolant(t_d(k))';  % (n_input_dim × 1)
                 u_d(k, :) = I_k';
                 z = params.W * x_d(k, :)' + params.W_in * I_k + params.mu;
                 f_k = params.activation.apply(z);

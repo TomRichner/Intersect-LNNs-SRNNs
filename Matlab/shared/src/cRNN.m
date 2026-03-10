@@ -428,6 +428,13 @@ classdef (Abstract) cRNN < handle
             obj.u_ex = obj.stimulus.u_ex;
             obj.u_interpolant = obj.stimulus.u_interpolant;
 
+            % If stimulus provides ESN input weights (pre-multiplied input),
+            % set W_in = eye(n) so dynamics_ltc's W_in * I_t = I_t.
+            % SRNN doesn't use W_in in dynamics; LNN does.
+            if isprop(obj.stimulus, 'W_in_esn') && ~isempty(obj.stimulus.W_in_esn)
+                obj.W_in = eye(obj.n);
+            end
+
             fprintf('Stimulus ready: %d time points\n', length(obj.t_ex));
         end
 

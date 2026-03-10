@@ -44,6 +44,7 @@ classdef SRNNModel2 < cRNN
     properties
         input_config                % Struct with stimulus parameters (legacy)
         reps = 1                    % Repetition index
+        readout_mode = 'firing_rate' % ESN readout: 'firing_rate', 'state', 'full_state', 'synaptic'
     end
 
 
@@ -123,19 +124,38 @@ classdef SRNNModel2 < cRNN
         end
 
         function features = get_readout_features(obj)
-            % GET_READOUT_FEATURES Return firing rates as ESN readout features.
+            % GET_READOUT_FEATURES Return readout feature matrix (n_features × T).
             %
-            % Returns n × T matrix of firing rates [r_E; r_I].
+            % Output depends on obj.readout_mode:
+            %   'firing_rate' (default) — [r_E; r_I] (n × T)
+            %   'state'                 — [x_E; x_I] (n × T)
+            %   'full_state'            — full state vector (N_sys_eqs × T)
+            %   'synaptic'              — [br_E; br_I] (n × T)
 
-            if ~isempty(obj.state_out)
-                S = obj.state_out;
-            else
+            if isempty(obj.state_out)
                 error('SRNNModel2:NoState', 'No state data available.');
             end
 
-            params = obj.cached_params;
-            [~, ~, ~, r, ~] = obj.unpack_and_compute_states(S, params);
-            features = [r.E; r.I];  % n × T
+            switch obj.readout_mode
+                case 'firing_rate'
+                    params = obj.cached_params;
+                    [~, ~, ~, r, ~] = obj.unpack_and_compute_states(obj.state_out, params);
+                    features = [r.E; r.I];  % n × T
+                case 'state'
+                    params = obj.cached_params;
+                    [x, ~, ~, ~, ~] = obj.unpack_and_compute_states(obj.state_out, params);
+                    features = [x.E; x.I];  % n × T
+                case 'full_state'
+                    features = obj.state_out';  % N_sys_eqs × T
+                case 'synaptic'
+                    params = obj.cached_params;
+                    [~, ~, ~, ~, br] = obj.unpack_and_compute_states(obj.state_out, params);
+                    features = [br.E; br.I];  % n × T
+                otherwise
+                    error('SRNNModel2:UnknownReadoutMode', ...
+                        'Unknown readout_mode: ''%s''. Valid: firing_rate, state, full_state, synaptic', ...
+                        obj.readout_mode);
+            end
         end
 
         function J = get_jacobian(obj, S, params)

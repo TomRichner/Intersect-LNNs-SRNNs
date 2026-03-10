@@ -112,7 +112,10 @@ classdef ESNStimulus < Stimulus
             obj.t_ex = (0:(T_total-1))' * dt;
             obj.u_ex = obj.W_in_esn * obj.u_scalar';  % n × T
 
-            %% 4. Build interpolant
+            %% 4. Build interpolant — returns neural-space input (n-dim)
+            % The interpolant returns pre-multiplied input: W_in_esn * u_scalar(t)
+            % Models like SRNN's dynamics_fast use this directly.
+            % For LNN, cRNN.build_stimulus sets W_in = eye(n) so W_in * I_t = I_t.
             obj.u_interpolant = griddedInterpolant(obj.t_ex, obj.u_ex', 'linear', 'none');
 
             fprintf('ESNStimulus built: %d samples, %d neurons receive input\n', ...
