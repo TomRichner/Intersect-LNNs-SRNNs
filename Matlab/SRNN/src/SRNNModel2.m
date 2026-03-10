@@ -1,19 +1,9 @@
-classdef SRNNModel2 < handle
-    % SRNNMODEL2 Spiking Rate Neural Network Model class (FractionalResevoir version)
+classdef SRNNModel2 < cRNN
+    % SRNNMODEL2 Stable Recurrent Neural Network Model.
     %
-    % Copied from ConnectivityAdaptation/StabilityAnalysis/src/SRNNModel.m
-    % Renamed to SRNNModel2 for use in FractionalResevoir project.
-    %
-    % DIVERGENT INTERNAL FUNCTIONS (to avoid path conflicts):
-    %   - plot_eigenvalues_helper (static) - eigenvalue scatter plot
-    %   - decimate_states (static) - state decimation for plotting
-    %   - initialize_state (static) - state vector initialization
-    %   - filter_lyapunov (instance) - local Lyapunov filtering
-    %   - compute_lyapunov_exponents_internal (static) - main Lyapunov dispatcher
-    %   - benettin_algorithm_internal (static) - Benettin's LLE algorithm
-    %   - lyapunov_spectrum_qr_internal (static) - QR full spectrum method
-    %   - get_minMaxRange_internal (static) - state bounds for Benettin
-    %   - compute_kaplan_yorke_dimension_internal (static) - Kaplan-Yorke dimension
+    % Implements a continuous-time rate network with spike-frequency
+    % adaptation (SFA) and short-term depression (STD).
+    % Inherits shared properties and lifecycle from cRNN.
     %
     % Usage:
     %   model = SRNNModel2('n_a_E', 3, 'n_b_E', 1);
@@ -21,24 +11,10 @@ classdef SRNNModel2 < handle
     %   model.run();
     %   model.plot();
     %
-    % See also: SRNN_ESN_reservoir
+    % See also: cRNN, LNN, SRNN_ESN_reservoir
 
-
-    %% Network Architecture Properties
+    %% SRNN-Specific Properties
     properties
-        n = 300                     % Total number of neurons
-        f = 0.5                     % Fraction of excitatory neurons
-        indegree = 100              % Expected in-degree
-
-        % RMT tilde-notation parameters (Harris 2023)
-        mu_E_tilde                  % Normalized excitatory mean (default: 1/(alpha*sqrt(n)))
-        mu_I_tilde                  % Normalized inhibitory mean (default: -1/(alpha*sqrt(n)))
-        sigma_E_tilde               % Normalized excitatory std dev (default: 1/(alpha*sqrt(n)))
-        sigma_I_tilde               % Normalized inhibitory std dev (default: 1/(alpha*sqrt(n)))
-        E_W = 0                     % Mean offset: added to both mu_E_tilde and mu_I_tilde
-        zrs_mode = 'none'           % ZRS mode: 'none', 'ZRS', 'SZRS', 'Partial_SZRS'
-
-        level_of_chaos = 1.0        % Scaling factor for W
         rescale_by_abscissa = false % Whether to apply 1/abscissa_0 scaling
     end
 
@@ -48,8 +24,8 @@ classdef SRNNModel2 < handle
         n_a_I = 0                   % Number of adaptation timescales for I neurons
         tau_a_E                     % Adaptation time constants for E neurons (1 x n_a_E)
         tau_a_I                     % Adaptation time constants for I neurons (1 x n_a_I)
-        c_E = 0.15/3                 % Adaptation scaling for E neurons
-        c_I = 0.15/3                  % Adaptation scaling for I neurons
+        c_E = 0.15/3                % Adaptation scaling for E neurons
+        c_I = 0.15/3                % Adaptation scaling for I neurons
     end
 
     %% Short-Term Depression (STD) Properties
@@ -62,85 +38,33 @@ classdef SRNNModel2 < handle
         tau_b_I_rel = 0.25          % STD release time constant for I neurons (s)
     end
 
-    %% Dynamics Properties
+    %% SRNN Dynamics Properties
     properties
         tau_d = 0.1                 % Dendritic time constant (s)
-        activation_function         % Activation function handle
-        activation_function_derivative  % Derivative of activation function
-        S_a = 0.9                   % Activation function parameter a
-        S_c = 0.35                  % Activation function parameter c (center)
-    end
-
-    %% Simulation Settings Properties
-    properties
-        fs = 400                    % Sampling frequency (Hz)
-        T_range = [0, 50]           % Simulation time interval [start, end]
-        T_plot                      % Plotting time interval (defaults to T_range)
-        ode_solver = @ode45         % ODE solver function handle
-        ode_opts                    % ODE solver options struct
+        activation_function         % Activation function handle (legacy, built from obj.activation)
+        activation_function_derivative  % Derivative handle (legacy, built from obj.activation)
     end
 
     %% Input Configuration Properties
     properties
-        input_config                % Struct with stimulus parameters
-        u_ex_scale = 1.0            % Scaling factor for external input
-        rng_seeds = [1 2]           % RNG seeds [network, stimulus, etc]
-        reps = 1                    % Repetition index (reserved for future use; typically unused)
+        input_config                % Struct with stimulus parameters (legacy)
+        reps = 1                    % Repetition index
     end
 
-    %% Lyapunov Settings Properties
-    properties
-        lya_method = 'benettin'     % Lyapunov method: 'benettin', 'qr', or 'none'
-        lya_T_interval              % Time interval for Lyapunov computation
-        filter_local_lya = false    % Whether to filter local Lyapunov exponent
-        lya_filter_order = 2        % Butterworth filter order
-        lya_filter_cutoff = 0.25    % Normalized cutoff frequency (fraction of Nyquist)
+    %% SRNN Results (packed state)
+    properties (SetAccess = protected)
+        S_out                       % State trajectory (nt x N_sys_eqs)
     end
 
-    %% Storage Options Properties
-    properties
-        store_full_state = false    % Whether to keep full S_out in memory
-        store_decimated_state = true % Whether to keep decimated plot data
-        plot_deci                   % Decimation factor for plotting (computed from fs/plot_freq if not set)
-        plot_freq = 10              % Target plotting frequency (Hz)
-    end
-
-    %% RMT Dependent Properties (computed from tilde parameters)
+    %% SRNN Dependent Properties
     properties (Dependent)
-        alpha               % Sparsity = indegree/n
-        default_val         % Normalization factor F = 1/sqrt(N*alpha*(2-alpha)) (Harris 2023)
+        default_val         % Normalization factor F = 1/sqrt(N*alpha*(2-alpha))
         mu_se               % Sparse excitatory mean
         mu_si               % Sparse inhibitory mean
         sigma_se            % Sparse excitatory std dev
         sigma_si            % Sparse inhibitory std dev
         R                   % Theoretical spectral radius (Harris 2023 Eq 18)
-        n_E                 % Number of excitatory neurons = round(f*n)
-        n_I                 % Number of inhibitory neurons = n - n_E
-        E_indices           % Indices of E neurons = 1:n_E
-        I_indices           % Indices of I neurons = (n_E+1):n
         N_sys_eqs           % Total state dimension
-    end
-
-    %% Computed Properties (SetAccess = protected for subclass access)
-    properties (SetAccess = protected)
-        W                           % Connection matrix (n x n)
-        is_built = false            % Flag indicating if network is initialized
-
-        % External input (generated by build)
-        t_ex                        % Time vector for external input
-        u_ex                        % External input matrix (n x nt)
-        u_interpolant               % griddedInterpolant for external input (avoids persistent vars)
-        S0                          % Initial state vector
-        cached_params               % Cached params struct (set by build)
-    end
-
-    %% Results Properties (conditionally stored)
-    properties (SetAccess = protected)
-        t_out                       % Time vector from ODE solver
-        S_out                       % State trajectory (nt x N_sys_eqs)
-        plot_data                   % Struct with decimated data for plotting
-        lya_results                 % Lyapunov analysis results struct
-        has_run = false             % Flag indicating if simulation has run
     end
 
     %% Constructor
@@ -153,8 +77,24 @@ classdef SRNNModel2 < handle
             %   model = SRNNModel2('n', 200, 'level_of_chaos', 2.0)
             %   model = SRNNModel2('n_a_E', 3, 'n_b_E', 1)
 
-            % Set default values
-            obj.set_defaults();
+            % Call base class constructor
+            obj@cRNN();
+
+            % SRNN-specific defaults
+            obj.n = 300;
+            obj.indegree = 100;
+            obj.T_range = [0, 50];
+            obj.lya_method = 'benettin';
+
+            % Set default activation strategy
+            obj.activation = PiecewiseSigmoid('S_a', 0.9, 'S_c', 0.35);
+
+            % Set default stimulus strategy
+            obj.stimulus = StepStimulus();
+
+            % Build legacy function handles from activation strategy
+            obj.activation_function = @(x) obj.activation.apply(x);
+            obj.activation_function_derivative = @(x) obj.activation.derivative(x);
 
             % Parse name-value pairs
             for i = 1:2:length(varargin)
@@ -164,19 +104,11 @@ classdef SRNNModel2 < handle
                     warning('SRNNModel:UnknownProperty', 'Unknown property: %s', varargin{i});
                 end
             end
-
-            % Compute plot_deci from fs and plot_freq if not explicitly set
-            if isempty(obj.plot_deci)
-                obj.plot_deci = round(obj.fs / obj.plot_freq);
-            end
         end
     end
 
-    %% Dependent Property Getters
+    %% SRNN Dependent Property Getters
     methods
-        function val = get.alpha(obj)
-            val = obj.indegree / obj.n;
-        end
 
         function val = get.default_val(obj)
             % DEFAULT_VAL Normalization factor F = 1/sqrt(N*alpha*(2-alpha))
@@ -227,22 +159,6 @@ classdef SRNNModel2 < handle
             end
         end
 
-        function val = get.n_E(obj)
-            val = round(obj.f * obj.n);
-        end
-
-        function val = get.n_I(obj)
-            val = obj.n - obj.n_E;
-        end
-
-        function val = get.E_indices(obj)
-            val = 1:obj.n_E;
-        end
-
-        function val = get.I_indices(obj)
-            val = (obj.n_E + 1):obj.n;
-        end
-
         function val = get.N_sys_eqs(obj)
             nE = obj.n_E;
             nI = obj.n_I;
@@ -250,145 +166,80 @@ classdef SRNNModel2 < handle
         end
     end
 
-    %% Public Methods
+    %% Abstract Method Implementations (from cRNN)
     methods
-        function build(obj)
-            % BUILD Initialize the network: create W, generate stimulus, cache params
-            %
-            % This method must be called before run(). It delegates to three
-            % protected sub-methods that subclasses can override:
-            %   1. build_network()   - Create W matrix
-            %   2. build_stimulus()  - Generate external stimulus, interpolant, S0
-            %   3. finalize_build()  - Validate and cache params
-
-            obj.build_network();
-            obj.build_stimulus();
-            obj.finalize_build();
-        end
-
-        function run(obj)
-            % RUN Execute the ODE simulation
-            %
-            % This method integrates the SRNN equations and optionally computes
-            % Lyapunov exponents. Results are stored based on storage options.
-
-            if ~obj.is_built
-                error('SRNNModel:NotBuilt', 'Model must be built before running. Call build() first.');
-            end
-
-            % Use cached params struct
-            params = obj.cached_params;
-
-            % Set up ODE options
-            dt = 1 / obj.fs;
-            if isempty(obj.ode_opts)
-                jac_wrapper = @(t, S) SRNNModel2.compute_Jacobian_fast(S, params);
-                obj.ode_opts = odeset('RelTol', 1e-9, 'AbsTol', 1e-9, 'MaxStep', dt, 'Jacobian', jac_wrapper);
-            end
-
-            % Define RHS function using closure (avoids OOP overhead)
-            % Cache interpolant and params to avoid property access on every call
-            u_interp = obj.u_interpolant;
-            params.u_interpolant = u_interp;  % Add to params for dynamics_fast
+        function rhs = get_rhs(obj, params)
+            % GET_RHS Return @(t, S) function handle for SRNN dynamics.
             rhs = @(t, S) SRNNModel2.dynamics_fast(t, S, params);
-
-            % Integrate
-            fprintf('Integrating equations\n');
-            tic
-            [t_raw, S_raw] = obj.ode_solver(rhs, obj.t_ex, obj.S0, obj.ode_opts);
-            integration_time = toc;
-            fprintf('Integration complete in %.2f seconds.\n', integration_time);
-
-            % Verify output times match input times
-            if length(t_raw) ~= length(obj.t_ex) || max(abs(t_raw - obj.t_ex)) > 1e-9
-                error('SRNNModel:TimeMismatch', 'ODE solver output times do not match input times. Max diff: %.2e', max(abs(t_raw(:) - obj.t_ex(:))));
-            end
-
-            % Store temporarily for Lyapunov and decimation
-            obj.t_out = t_raw;
-            obj.S_out = S_raw;
-
-            % Compute Lyapunov exponents
-            if ~strcmpi(obj.lya_method, 'none')
-                obj.compute_lyapunov();
-                % Filter local Lyapunov exponent (before decimation to avoid edge effects)
-                if obj.filter_local_lya
-                    obj.filter_lyapunov();
-                end
-            end
-
-            % Decimate and unpack for plotting
-            if obj.store_decimated_state
-                obj.decimate_and_unpack();
-            end
-
-            % Clear full state if not storing (free memory)
-            if ~obj.store_full_state
-                obj.S_out = [];
-            end
-
-            obj.has_run = true;
-            fprintf('Simulation complete.\n');
         end
 
-        function compute_lyapunov(obj)
-            % COMPUTE_LYAPUNOV Compute Lyapunov exponents based on lya_method
-
-            if isempty(obj.S_out)
-                error('SRNNModel:NoStateData', 'State data not available. Set store_full_state=true or call before clearing.');
-            end
-
-            dt = 1 / obj.fs;
-            params = obj.cached_params;
-
-            % Set Lyapunov time interval
-            if isempty(obj.lya_T_interval)
-                if obj.T_range(2) >= 15
-                    obj.lya_T_interval = [obj.T_range(1) + 15, obj.T_range(2)]; % skip first 15 seconds
-                else
-                    obj.lya_T_interval = [obj.T_range(1), obj.T_range(2)]; % fallback for short simulations
-                end
-            end
-
-            % Define RHS function using closure (avoids OOP overhead)
-            params.u_interpolant = obj.u_interpolant;
-            rhs = @(t, S) SRNNModel2.dynamics_fast(t, S, params);
-
-            fprintf('Computing Lyapunov exponents using %s method\n', obj.lya_method);
-            obj.lya_results = SRNNModel2.compute_lyapunov_exponents_internal(obj.lya_method, obj.S_out, obj.t_out, dt, obj.fs, obj.lya_T_interval, params, obj.ode_opts, obj.ode_solver, rhs, obj.t_ex, obj.u_ex);
-
-            if isfield(obj.lya_results, 'LLE')
-                fprintf('Largest Lyapunov Exponent: %.4f\n', obj.lya_results.LLE);
-            end
-        end
-
-        function filter_lyapunov(obj)
-            % FILTER_LYAPUNOV Apply lowpass filter to local Lyapunov exponent
+        function features = get_readout_features(obj)
+            % GET_READOUT_FEATURES Return firing rates as ESN readout features.
             %
-            % This filters the local_lya signal BEFORE decimation to avoid
-            % edge effects that would occur if filtering after trimming.
-            % Uses a Butterworth filter with parameters from obj properties.
+            % Returns n × T matrix of firing rates [r_E; r_I].
 
-            if isempty(obj.lya_results)
-                return;
+            if isempty(obj.S_out) && ~isempty(obj.state_out)
+                % Use state_out from cRNN
+                S = obj.state_out;
+            elseif ~isempty(obj.S_out)
+                S = obj.S_out;
+            else
+                error('SRNNModel2:NoState', 'No state data available.');
             end
 
-            % Design filter (cutoff in Hz, normalized by Nyquist = lya_fs/2)
-            Wn = obj.lya_filter_cutoff / (obj.lya_results.lya_fs / 2);
-            [b, a] = butter(obj.lya_filter_order, Wn, 'low');
-
-            % Filter local_lya for Benettin method
-            if isfield(obj.lya_results, 'local_lya') && ~isempty(obj.lya_results.local_lya)
-                obj.lya_results.local_lya = filtfilt(b, a, obj.lya_results.local_lya);
-            end
-
-            % Filter local_LE_spectrum_t for QR method (each column)
-            if isfield(obj.lya_results, 'local_LE_spectrum_t') && ~isempty(obj.lya_results.local_LE_spectrum_t)
-                for col = 1:size(obj.lya_results.local_LE_spectrum_t, 2)
-                    obj.lya_results.local_LE_spectrum_t(:, col) = filtfilt(b, a, obj.lya_results.local_LE_spectrum_t(:, col));
-                end
-            end
+            params = obj.cached_params;
+            [~, ~, ~, r, ~] = obj.unpack_and_compute_states(S, params);
+            features = [r.E; r.I];  % n × T
         end
+
+        function J = get_jacobian(obj, S, params)
+            % GET_JACOBIAN Return Jacobian matrix for SRNN at state S.
+            J = SRNNModel2.compute_Jacobian_fast(S, params);
+        end
+
+        function initialize_state(obj)
+            % INITIALIZE_STATE Set initial state vector for SRNN.
+            %
+            % State layout: S0 = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
+
+            params = obj.get_params();
+
+            % Adaptation states
+            a0_E = [];
+            if params.n_a_E > 0
+                a0_E = zeros(params.n_E * params.n_a_E, 1);
+            end
+            a0_I = [];
+            if params.n_a_I > 0
+                a0_I = zeros(params.n_I * params.n_a_I, 1);
+            end
+
+            % STD states (start at 1 = no depression)
+            b0_E = [];
+            if params.n_b_E > 0
+                b0_E = ones(params.n_E * params.n_b_E, 1);
+            end
+            b0_I = [];
+            if params.n_b_I > 0
+                b0_I = ones(params.n_I * params.n_b_I, 1);
+            end
+
+            % Dendritic states
+            x0 = 0.1 .* randn(params.n, 1);
+
+            obj.S0 = [a0_E; a0_I; b0_E; b0_I; x0];
+        end
+
+        function n_state = get_n_state(obj)
+            % GET_N_STATE Return total SRNN state dimension (packed).
+            n_state = obj.N_sys_eqs;
+        end
+
+        function bounds = get_state_bounds(obj)
+            % GET_STATE_BOUNDS Return NaN bounds for SRNN state variables.
+            bounds = nan(obj.N_sys_eqs, 2);
+        end
+
 
         function [fig_handle, ax_handles] = plot(obj, varargin)
             % PLOT Generate time series plots for SRNN simulation
@@ -553,33 +404,16 @@ classdef SRNNModel2 < handle
         end
 
         function params = get_params(obj)
-            % GET_PARAMS Return params struct for compatibility with existing functions
+            % GET_PARAMS Return params struct for SRNN dynamics.
             %
-            % This method creates a struct containing all parameters needed
-            % by functions like SRNN_reservoir, dynamics_fast, etc.
+            % Extends cRNN.get_params() with SRNN-specific fields.
 
-            params = struct();
+            params = get_params@cRNN(obj);
 
-            % Network architecture
-            params.n = obj.n;
-            params.f = obj.f;
-            params.indegree = obj.indegree;
-            params.alpha = obj.alpha;
-            params.level_of_chaos = obj.level_of_chaos;
-
-            % RMT parameters
-            params.mu_E_tilde = obj.mu_E_tilde;
-            params.mu_I_tilde = obj.mu_I_tilde;
-            params.sigma_E_tilde = obj.sigma_E_tilde;
-            params.sigma_I_tilde = obj.sigma_I_tilde;
-            params.E_W = obj.E_W;
+            % RMT computed values
             params.R = obj.R;
 
             % Computed E/I params
-            params.n_E = obj.n_E;
-            params.n_I = obj.n_I;
-            params.E_indices = obj.E_indices;
-            params.I_indices = obj.I_indices;
             params.N_sys_eqs = obj.N_sys_eqs;
 
             % Adaptation params
@@ -602,44 +436,6 @@ classdef SRNNModel2 < handle
             params.tau_d = obj.tau_d;
             params.activation_function = obj.activation_function;
             params.activation_function_derivative = obj.activation_function_derivative;
-
-            % Connection matrix (if built)
-            if ~isempty(obj.W)
-                params.W = obj.W;
-            end
-
-            % RNG seeds
-            params.rng_seeds = obj.rng_seeds;
-        end
-
-        function clear_results(obj)
-            % CLEAR_RESULTS Free memory by clearing stored state data
-
-            obj.t_out = [];
-            obj.S_out = [];
-            obj.plot_data = [];
-            obj.lya_results = [];
-            obj.has_run = false;
-            fprintf('Results cleared.\n');
-        end
-
-        function reset(obj)
-            % RESET Clear built state to allow rebuilding with new parameters
-            %
-            % Usage:
-            %   model.reset();
-            %   model.n = 200;  % Change parameters
-            %   model.build();  % Rebuild with new settings
-
-            obj.is_built = false;
-            obj.W = [];
-            obj.u_interpolant = [];
-            obj.t_ex = [];
-            obj.u_ex = [];
-            obj.S0 = [];
-            obj.cached_params = [];
-            obj.clear_results();
-            fprintf('Model reset. Modify parameters and call build() to reinitialize.\n');
         end
 
         function dS_dt = dynamics(obj, t, S)
@@ -655,26 +451,13 @@ classdef SRNNModel2 < handle
         end
     end
 
-    %% Protected Build Sub-Methods (overridable by subclasses)
+    %% Protected Build Sub-Methods (SRNN overrides)
     methods (Access = protected)
         function build_network(obj)
-            % BUILD_NETWORK Create the connectivity matrix W
+            % BUILD_NETWORK Create W and set SRNN-specific defaults.
             %
-            % Sets RNG seed, fills in default tilde/tau parameters if empty,
-            % then creates and scales the W matrix via RMTMatrix.
-            % Subclasses can override for custom connectivity.
-
-            % Set RNG seed for network generation
-            rng(obj.rng_seeds(1));
-
-            % Compute RMT tilde defaults if not set
-            % F = 1/sqrt(N*alpha*(2-alpha)), see parameter_table.md
-            F = obj.default_val;
-
-            if isempty(obj.mu_E_tilde),    obj.mu_E_tilde = 3*F;     end
-            if isempty(obj.mu_I_tilde),    obj.mu_I_tilde = -4*F;    end
-            if isempty(obj.sigma_E_tilde), obj.sigma_E_tilde = F;    end
-            if isempty(obj.sigma_I_tilde), obj.sigma_I_tilde = F;    end
+            % Calls cRNN.build_network() for RMT connectivity, then applies
+            % SRNN-specific rescale_by_abscissa and tau_a defaults.
 
             % Compute tau_a arrays if n_a > 0 but tau_a not set
             if obj.n_a_E > 0 && isempty(obj.tau_a_E)
@@ -684,109 +467,34 @@ classdef SRNNModel2 < handle
                 obj.tau_a_I = logspace(log10(0.25), log10(10), obj.n_a_I);
             end
 
-            % Create W matrix using RMTMatrix
-            rmt = RMTMatrix(obj.n);
-            rmt.alpha = obj.alpha;
-            rmt.f = obj.f;
-            rmt.mu_tilde_e = obj.mu_E_tilde + obj.E_W;
-            rmt.mu_tilde_i = obj.mu_I_tilde + obj.E_W;
-            rmt.sigma_tilde_e = obj.sigma_E_tilde;
-            rmt.sigma_tilde_i = obj.sigma_I_tilde;
-            rmt.zrs_mode = obj.zrs_mode;
+            % Call base class build_network (RMT connectivity)
+            build_network@cRNN(obj);
 
-            W_raw = rmt.W;
-
-            % Scale W
+            % SRNN-specific: rescale by spectral abscissa
             if obj.rescale_by_abscissa
-                W_eigs = eig(W_raw);
+                W_eigs = eig(obj.W);
                 abscissa_0 = max(real(W_eigs));
                 gamma = 1 / abscissa_0;
-                obj.W = obj.level_of_chaos * gamma * W_raw;
-            else
-                obj.W = obj.level_of_chaos * W_raw;
+                obj.W = gamma * obj.W;  % Already scaled by level_of_chaos in base
+                W_eigs_rescaled = eig(obj.W);
+                fprintf('Rescaled by abscissa: spectral radius = %.3f, abscissa = %.3f\n', ...
+                    max(abs(W_eigs_rescaled)), max(real(W_eigs_rescaled)));
             end
 
-            % Report info
-            W_eigs_scaled = eig(obj.W);
-            fprintf('W matrix created: spectral radius = %.3f, abscissa = %.3f, theoretical R = %.3f\n', ...
-                max(abs(W_eigs_scaled)), max(real(W_eigs_scaled)), obj.R);
-        end
-
-        function build_stimulus(obj)
-            % BUILD_STIMULUS Generate external stimulus, interpolant, and initial state
-            %
-            % Default implementation for SRNNModel2: generates sparse step
-            % stimulus using generate_external_input, builds a linear
-            % griddedInterpolant, and initializes the state vector S0.
-            % SRNN_ESN_reservoir overrides this to generate ESN-specific stimulus.
-
-            % Generate external stimulus
-            obj.generate_stimulus();
-
-            % Build interpolant for external input (avoids persistent variables)
-            obj.u_interpolant = griddedInterpolant(obj.t_ex, obj.u_ex', 'linear', 'none');
-
-            % Initialize state vector
-            params_init = obj.get_params();
-            obj.S0 = obj.initialize_state(params_init);
-        end
-
-        function finalize_build(obj)
-            % FINALIZE_BUILD Validate configuration and cache params
-            %
-            % Called after build_network() and build_stimulus(). Validates
-            % the configuration and caches the params struct for fast access
-            % during ODE integration. Subclasses typically do not override.
-
-            % Validate configuration
-            obj.validate();
-
-            % Cache params struct for fast access in run/plot methods
-            obj.cached_params = obj.get_params();
-
-            obj.is_built = true;
-            fprintf('Model built successfully. Ready to run.\n');
-        end
-    end
-
-    %% Private Methods
-    methods (Access = protected)
-        function set_defaults(obj)
-            % SET_DEFAULTS Initialize all properties to default values
-
-            % Set default activation function (piecewiseSigmoid)
-            obj.activation_function = @(x) SRNNModel2.piecewiseSigmoid(x, obj.S_a, obj.S_c);
-            obj.activation_function_derivative = @(x) SRNNModel2.piecewiseSigmoidDerivative(x, obj.S_a, obj.S_c);
-
-            % Set default input configuration
-            obj.input_config = struct();
-            obj.input_config.n_steps = 3;
-            obj.input_config.step_density = 0.2;
-            obj.input_config.amp = 0.5;
-            obj.input_config.no_stim_pattern = false(1, 3);
-            obj.input_config.no_stim_pattern(1:2:end) = true;
-            obj.input_config.intrinsic_drive = [];  % Will be set in build
-            obj.input_config.positive_only = false;  % Default: allow positive and negative amplitudes
-            obj.input_config.step_density_E = 0.15;   % Fraction of E neurons receiving input
-            obj.input_config.step_density_I = 0;      % Fraction of I neurons receiving input (0 = E only)
-
-            % T_plot defaults to T_range (set in build if not specified)
-            obj.T_plot = [];
+            fprintf('Theoretical R = %.3f\n', obj.R);
         end
 
         function validate(obj)
-            % VALIDATE Check parameter consistency and constraints
+            % VALIDATE SRNN-specific parameter validation.
 
-            % Check n_E and n_I
             if obj.n_E < 1
                 error('SRNNModel:InvalidParams', 'n_E must be >= 1. Current: %d (n=%d, f=%.2f)', obj.n_E, obj.n, obj.f);
             end
 
             if obj.n_I < 1
-                warning('SRNNModel:NoInhibitory', 'No inhibitory neurons (n_I=%d). Network may be unstable.', obj.n_I);
+                warning('SRNNModel:NoInhibitory', 'No inhibitory neurons (n_I=%d).', obj.n_I);
             end
 
-            % Check adaptation consistency
             if obj.n_a_E > 0 && isempty(obj.tau_a_E)
                 error('SRNNModel:InvalidParams', 'tau_a_E must be set when n_a_E > 0');
             end
@@ -794,54 +502,14 @@ classdef SRNNModel2 < handle
                 error('SRNNModel:InvalidParams', 'tau_a_I must be set when n_a_I > 0');
             end
 
-            % Check T_range
-            if obj.T_range(2) <= obj.T_range(1)
-                error('SRNNModel:InvalidParams', 'T_range(2) must be > T_range(1)');
-            end
-
-            % Check level_of_chaos
             if obj.level_of_chaos <= 0
                 warning('SRNNModel:InvalidParams', 'level_of_chaos should be > 0. Current: %.2f', obj.level_of_chaos);
             end
         end
+    end
 
-        function generate_stimulus(obj)
-            % GENERATE_STIMULUS Create external input u_ex using generate_external_input
-
-            dt = 1 / obj.fs;
-            T_stim = obj.T_range(2);
-
-            % Set intrinsic drive if not specified
-            if isempty(obj.input_config.intrinsic_drive)
-                obj.input_config.intrinsic_drive = zeros(obj.n, 1);
-            end
-
-            % Create params struct for generate_external_input
-            params_stim = struct('n', obj.n, 'f', obj.f, ...
-                'E_indices', obj.E_indices, 'I_indices', obj.I_indices);
-
-            % Generate stimulus
-            [u_stim, t_stim] = SRNNModel2.generate_external_input(params_stim, T_stim, obj.fs, obj.rng_seeds(2), obj.input_config);
-
-            % Handle negative start time (prepend zeros for settling)
-            if obj.T_range(1) < 0
-                t_pre = (obj.T_range(1):dt:-dt)';
-                u_pre = zeros(obj.n, length(t_pre));
-                obj.t_ex = [t_pre; t_stim];
-                obj.u_ex = [u_pre, u_stim];
-            else
-                % Slice if start time is positive
-                indices = t_stim >= obj.T_range(1);
-                obj.t_ex = t_stim(indices);
-                obj.u_ex = u_stim(:, indices);
-            end
-
-            % Apply scaling
-            obj.u_ex = obj.u_ex .* obj.u_ex_scale;
-
-            fprintf('External stimulus generated: %d time points, %d neurons\n', length(obj.t_ex), obj.n);
-        end
-
+    %% SRNN-specific Protected Methods
+    methods (Access = protected)
         function decimate_and_unpack(obj)
             % DECIMATE_AND_UNPACK Decimate state data and unpack for plotting
 
@@ -972,47 +640,6 @@ classdef SRNNModel2 < handle
             S_plot = S_out(indices, :);
         end
 
-        function S0 = initialize_state(~, params)
-            % INITIALIZE_STATE Initialize state vector for SRNN
-            %
-            % Initializes the complete state vector for an SRNN with adaptation and
-            % short-term depression. The state is organized as:
-            %   S0 = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
-            %
-            %   - a_E, a_I: Adaptation variables (initialized to 0)
-            %   - b_E, b_I: STD variables (initialized to 1, no depression)
-            %   - x: Dendritic states (initialized to small random values)
-
-            % Initialize adaptation states for E neurons
-            a0_E = [];
-            if params.n_a_E > 0
-                a0_E = zeros(params.n_E * params.n_a_E, 1);
-            end
-
-            % Initialize adaptation states for I neurons
-            a0_I = [];
-            if params.n_a_I > 0
-                a0_I = zeros(params.n_I * params.n_a_I, 1);
-            end
-
-            % Initialize STD states for E neurons (b variables start at 1.0, no depression)
-            b0_E = [];
-            if params.n_b_E > 0
-                b0_E = ones(params.n_E * params.n_b_E, 1);
-            end
-
-            % Initialize STD states for I neurons
-            b0_I = [];
-            if params.n_b_I > 0
-                b0_I = ones(params.n_I * params.n_b_I, 1);
-            end
-
-            % Initialize dendritic states (small random values)
-            x0 = 0.1 .* randn(params.n, 1);
-
-            % Pack state vector: [a_E; a_I; b_E; b_I; x]
-            S0 = [a0_E; a0_I; b0_E; b0_I; x0];
-        end
 
         function [x, a, b, r, br] = unpack_and_compute_states(~, S_out, params, a_zeros_b_ones)
             % UNPACK_AND_COMPUTE_STATES Unpack state vector and compute dependent variables
@@ -1390,544 +1017,6 @@ classdef SRNNModel2 < handle
 
             %% Pack derivatives
             dS_dt = [da_E_dt(:); da_I_dt(:); db_E_dt(:); db_I_dt(:); dx_dt];
-        end
-
-        %% ====================================================================
-        %                    INTERNAL LYAPUNOV FUNCTIONS
-        % =====================================================================
-        % Internalized from ConnectivityAdaptation to avoid path conflicts.
-
-        function lya_results = compute_lyapunov_exponents_internal(Lya_method, S_out, t_out, dt, fs, T_interval, params, opts, ode_solver, rhs_func, t_ex, u_ex)
-            % Compute Lyapunov exponents using Benettin or QR method.
-            % Internalized from ConnectivityAdaptation/src/algorithms/Lyapunov/compute_lyapunov_exponents.m
-
-            lya_results = struct();
-
-            if strcmpi(Lya_method, 'none')
-                return;
-            end
-
-            % Adjust lya_dt based on method
-            if strcmpi(Lya_method, 'qr')
-                lya_dt = 0.1;
-            elseif strcmpi(Lya_method, 'benettin')
-                lya_dt = 0.02;
-            else
-                lya_dt = 0.1;
-            end
-
-            lya_dt_vs_dt_factor = lya_dt / dt;
-
-            if abs(round(lya_dt_vs_dt_factor) - lya_dt_vs_dt_factor) > 1e-11
-                error(['lya_dt must be a multiple of dt. lya_dt_vs_dt_factor = ' num2str(lya_dt_vs_dt_factor)]);
-            end
-
-            if lya_dt_vs_dt_factor < 3
-                error(['lya_dt must be 3*dt or more. lya_dt_vs_dt_factor = ' num2str(lya_dt_vs_dt_factor) ' Increase fs or increase lya_dt']);
-            end
-
-            lya_fs = 1 / lya_dt;
-
-            switch lower(Lya_method)
-                case 'benettin'
-                    fprintf('Computing largest Lyapunov exponent using Benettin''s algorithm...\n');
-                    d0 = 1e-3;
-                    tic
-                    [LLE, local_lya, finite_lya, t_lya] = SRNNModel2.benettin_algorithm_internal(S_out, t_out, dt, fs, d0, T_interval, lya_dt, params, opts, rhs_func, t_ex, u_ex, ode_solver);
-                    toc
-                    lya_results.LLE = LLE;
-                    lya_results.local_lya = local_lya;
-                    lya_results.finite_lya = finite_lya;
-                    lya_results.t_lya = t_lya;
-                    lya_results.lya_dt = lya_dt;
-                    lya_results.lya_fs = lya_fs;
-
-                case 'qr'
-                    fprintf('Computing full Lyapunov spectrum using QR decomposition method...\n');
-                    tic
-                    jacobian_wrapper = @(tt, S, p) SRNNModel2.compute_Jacobian_fast(S, p);
-                    [LE_spectrum, local_LE_spectrum_t, finite_LE_spectrum_t, t_lya] = SRNNModel2.lyapunov_spectrum_qr_internal(S_out, t_out, lya_dt, params, ode_solver, opts, jacobian_wrapper, T_interval, params.N_sys_eqs, fs);
-                    toc
-                    fprintf('Lyapunov Dimension: %.2f\n', SRNNModel2.compute_kaplan_yorke_dimension_internal(LE_spectrum));
-                    lya_results.LE_spectrum = LE_spectrum;
-                    lya_results.local_LE_spectrum_t = local_LE_spectrum_t;
-                    lya_results.finite_LE_spectrum_t = finite_LE_spectrum_t;
-                    lya_results.t_lya = t_lya;
-                    lya_results.params.N_sys_eqs = params.N_sys_eqs;
-
-                    [sorted_LE, sort_idx] = sort(real(lya_results.LE_spectrum), 'descend');
-                    lya_results.LE_spectrum = sorted_LE;
-                    lya_results.local_LE_spectrum_t = lya_results.local_LE_spectrum_t(:, sort_idx);
-                    lya_results.finite_LE_spectrum_t = lya_results.finite_LE_spectrum_t(:, sort_idx);
-                    lya_results.sort_idx = sort_idx;
-                    lya_results.lya_dt = lya_dt;
-                    lya_results.lya_fs = lya_fs;
-                    fprintf('Largest Lyapunov Exponent (sorted): %.4f\n', lya_results.LE_spectrum(1));
-
-                otherwise
-                    error('Unknown Lyapunov method: %s', Lya_method);
-            end
-        end
-
-        function [LLE, local_lya, finite_lya, t_lya] = benettin_algorithm_internal(X, t, dt, fs, d0, T, lya_dt, params, ode_options, dynamics_func, t_ex, u_ex, ode_solver)
-            % Benettin's algorithm to compute the largest Lyapunov exponent.
-            % Internalized from ConnectivityAdaptation/src/algorithms/Lyapunov/benettin_algorithm.m
-
-            if ~isscalar(lya_dt) || ~isnumeric(lya_dt) || lya_dt <= 0
-                error('lya_dt must be a positive scalar.');
-            end
-
-            deci_lya = round(lya_dt * fs);
-            if deci_lya < 1
-                error('lya_dt * fs must result in at least 1 sample per Lyapunov interval.');
-            end
-
-            tau_lya = dt * deci_lya;
-            t_lya = t(1:deci_lya:end);
-
-            if t_lya(end) + tau_lya > T(2)
-                t_lya(end) = [];
-            end
-            nt_lya = numel(t_lya);
-
-            local_lya = zeros(nt_lya, 1);
-            finite_lya = nan(nt_lya, 1);
-            sum_log_stretching_factors = 0;
-
-            n_state = size(X, 2);
-            rnd_IC = randn(n_state, 1);
-            pert = (rnd_IC ./ norm(rnd_IC)) .* d0;
-
-            min_max_range = SRNNModel2.get_minMaxRange_internal(params);
-            min_bnds = min_max_range(:, 1);
-            max_bnds = min_max_range(:, 2);
-
-            for k = 1:nt_lya
-                idx_start = (k - 1) * deci_lya + 1;
-                idx_end = idx_start + deci_lya;
-
-                X_start = X(idx_start, :).';
-                X_k_pert = X_start + pert;
-
-                idx_violates_min = ~isnan(min_bnds) & (X_k_pert < min_bnds);
-                X_k_pert(idx_violates_min) = min_bnds(idx_violates_min);
-
-                idx_violates_max = ~isnan(max_bnds) & (X_k_pert > max_bnds);
-                X_k_pert(idx_violates_max) = max_bnds(idx_violates_max);
-
-                t_seg_detailed = t_lya(k) + (0:dt:tau_lya);
-
-                [~, X_pert_output_all_steps] = ode_solver(dynamics_func, t_seg_detailed, X_k_pert, ode_options);
-
-                X_pert_end = X_pert_output_all_steps(end, :).';
-                X_end = X(idx_end, :).';
-
-                delta = X_pert_end - X_end;
-                d_k = norm(delta);
-                local_lya(k) = log(d_k / d0) / tau_lya;
-
-                if ~isfinite(local_lya(k))
-                    warning('System diverged at t=%f. Truncating results.', t_lya(k));
-                    if k > 1
-                        last_valid = finite_lya(1:k-1);
-                        last_valid = last_valid(~isnan(last_valid));
-                        if ~isempty(last_valid)
-                            LLE = last_valid(end);
-                        else
-                            LLE = 0;
-                        end
-                    else
-                        LLE = 0;
-                    end
-                    local_lya(k:end) = [];
-                    finite_lya(k:end) = [];
-                    t_lya(k:end) = [];
-                    return;
-                end
-
-                pert = (delta ./ d_k) .* d0;
-
-                if t_lya(k) >= 0
-                    sum_log_stretching_factors = sum_log_stretching_factors + log(d_k / d0);
-                    finite_lya(k, 1) = sum_log_stretching_factors / max(t_lya(k) + tau_lya, eps);
-                end
-            end
-
-            last_valid = finite_lya(~isnan(finite_lya));
-            if ~isempty(last_valid)
-                LLE = last_valid(end);
-            else
-                LLE = 0;
-            end
-        end
-
-        function [LE_spectrum, local_LE_spectrum_t, finite_LE_spectrum_t, t_lya_vec] = lyapunov_spectrum_qr_internal(X_fid_traj, t_fid_traj, lya_dt_interval, params, ode_solver, ode_options_main, jacobian_func_handle, T_full_interval, N_states_sys, fs_fid)
-            % QR method for full Lyapunov spectrum.
-            % Internalized from ConnectivityAdaptation/src/algorithms/Lyapunov/lyapunov_spectrum_qr.m
-
-            fiducial_interpolants = cell(N_states_sys, 1);
-            for i = 1:N_states_sys
-                fiducial_interpolants{i} = griddedInterpolant(t_fid_traj, X_fid_traj(:, i), 'pchip');
-            end
-
-            dt_fid = 1 / fs_fid;
-
-            fid_dt = diff(t_fid_traj);
-            if ~isempty(fid_dt)
-                nominal_dt = median(fid_dt);
-                max_dt_dev = max(abs(fid_dt - nominal_dt));
-                tol_dt_dev = max(1e-4 * max(nominal_dt, eps(nominal_dt)), eps(dt_fid));
-                if max_dt_dev > tol_dt_dev
-                    error('Fiducial trajectory timestamps are not uniformly spaced. Max deviation %.3g s exceeds tolerance %.3g s.', max_dt_dev, tol_dt_dev);
-                end
-            end
-
-            deci_lya = round(lya_dt_interval / dt_fid);
-            if deci_lya == 0
-                error('lya_dt_interval is too small.');
-            end
-            tau_lya = dt_fid * deci_lya;
-
-            t_lya_indices = 1:deci_lya:length(t_fid_traj);
-            t_lya_vec = t_fid_traj(t_lya_indices);
-
-            if ~isempty(t_lya_vec) && (t_lya_vec(end) + tau_lya > t_fid_traj(end) + eps(t_fid_traj(end)))
-                t_lya_vec(end) = [];
-                t_lya_indices(end) = [];
-            end
-
-            nt_lya = numel(t_lya_vec);
-            if nt_lya == 0
-                warning('No Lyapunov intervals could be formed.');
-                LE_spectrum = nan(N_states_sys, 1);
-                local_LE_spectrum_t = [];
-                finite_LE_spectrum_t = [];
-                return;
-            end
-
-            Q_current = eye(N_states_sys);
-            sum_log_R_diag = zeros(N_states_sys, 1);
-
-            local_LE_spectrum_t = zeros(nt_lya, N_states_sys);
-            finite_LE_spectrum_t = nan(nt_lya, N_states_sys);
-
-            total_positive_time_accumulated = 0;
-            ode_options_var = ode_options_main;
-
-            for k = 1:nt_lya
-                t_start_segment = t_lya_vec(k);
-                t_end_segment = t_start_segment + tau_lya;
-                t_end_segment = min(t_end_segment, t_fid_traj(end));
-
-                current_segment_duration = t_end_segment - t_start_segment;
-                if current_segment_duration <= eps
-                    if k > 1
-                        local_LE_spectrum_t(k, :) = local_LE_spectrum_t(k-1, :);
-                        finite_LE_spectrum_t(k, :) = finite_LE_spectrum_t(k-1, :);
-                    else
-                        local_LE_spectrum_t(k, :) = NaN;
-                        finite_LE_spectrum_t(k, :) = NaN;
-                    end
-                    continue;
-                end
-
-                t_span_ode = [t_start_segment, t_end_segment];
-                Psi0_vec = reshape(Q_current, [], 1);
-
-                variational_eqs = @(tt, current_Psi_vec) SRNNModel2.variational_eqs_ode_internal(tt, current_Psi_vec, fiducial_interpolants, N_states_sys, jacobian_func_handle, params);
-                [~, Psi_solution_vec] = ode_solver(variational_eqs, t_span_ode, Psi0_vec, ode_options_var);
-
-                Psi_evolved_matrix = reshape(Psi_solution_vec(end, :)', [N_states_sys, N_states_sys]);
-
-                if any(~isfinite(Psi_evolved_matrix(:)))
-                    warning('System diverged at t=%f. Truncating results.', t_start_segment);
-                    if total_positive_time_accumulated > eps
-                        LE_spectrum = sum_log_R_diag / total_positive_time_accumulated;
-                    else
-                        LE_spectrum = nan(N_states_sys, 1);
-                    end
-                    t_lya_vec(k:end) = [];
-                    local_LE_spectrum_t(k:end, :) = [];
-                    finite_LE_spectrum_t(k:end, :) = [];
-                    return;
-                end
-
-                [Q_new, R_segment] = qr(Psi_evolved_matrix);
-                diag_R = diag(R_segment);
-
-                log_abs_diag_R = log(abs(diag_R));
-                valid_diag_R = abs(diag_R) > eps;
-
-                current_local_LEs = zeros(N_states_sys, 1);
-                current_local_LEs(valid_diag_R) = log_abs_diag_R(valid_diag_R) / current_segment_duration;
-                current_local_LEs(~valid_diag_R) = -Inf;
-                local_LE_spectrum_t(k, :) = current_local_LEs';
-
-                if t_start_segment >= -eps(0)
-                    sum_log_R_diag(valid_diag_R) = sum_log_R_diag(valid_diag_R) + log_abs_diag_R(valid_diag_R);
-                    total_positive_time_accumulated = total_positive_time_accumulated + current_segment_duration;
-                end
-
-                if total_positive_time_accumulated > eps
-                    finite_LE_spectrum_t(k, :) = (sum_log_R_diag / total_positive_time_accumulated)';
-                elseif k > 1 && t_start_segment >= -eps(0)
-                    finite_LE_spectrum_t(k, :) = finite_LE_spectrum_t(k-1, :);
-                else
-                    finite_LE_spectrum_t(k, :) = NaN;
-                end
-
-                Q_current = Q_new;
-            end
-
-            if total_positive_time_accumulated > eps
-                LE_spectrum = sum_log_R_diag / total_positive_time_accumulated;
-            else
-                warning('No accumulation over positive time for global LEs.');
-                LE_spectrum = nan(N_states_sys, 1);
-            end
-        end
-
-        function dPsi_vec_dt = variational_eqs_ode_internal(tt, current_Psi_vec, fiducial_interpolants, N_states_sys, jacobian_func_handle, params)
-            % Variational ODE for QR method.
-            X_fid_at_tt = zeros(N_states_sys, 1);
-            for state_idx = 1:N_states_sys
-                X_fid_at_tt(state_idx) = fiducial_interpolants{state_idx}(tt);
-            end
-            J_matrix = jacobian_func_handle(tt, X_fid_at_tt, params);
-            Psi_matrix = reshape(current_Psi_vec, [N_states_sys, N_states_sys]);
-            dPsi_matrix_dt = J_matrix * Psi_matrix;
-            dPsi_vec_dt = reshape(dPsi_matrix_dt, [], 1);
-        end
-
-        function min_max_range = get_minMaxRange_internal(params)
-            % Returns bounds per state variable for the SRNN state vector.
-            % By default no hard bounds (NaN), but vector matches state layout.
-            n = params.n;
-            n_E = params.n_E;
-            n_I = params.n_I;
-            n_a_E = params.n_a_E;
-            n_a_I = params.n_a_I;
-            n_b_E = params.n_b_E;
-            n_b_I = params.n_b_I;
-
-            len_a_E = n_E * n_a_E;
-            len_a_I = n_I * n_a_I;
-            len_b_E = n_E * n_b_E;
-            len_b_I = n_I * n_b_I;
-            len_x = n;
-
-            N_sys_eqs = len_a_E + len_a_I + len_b_E + len_b_I + len_x;
-            min_max_range = nan(N_sys_eqs, 2);
-        end
-
-        function D_KY = compute_kaplan_yorke_dimension_internal(lambda)
-            % Compute Kaplan-Yorke (Lyapunov) dimension from spectrum.
-            lambda = sort(lambda, 'descend');
-            cumsum_lambda = cumsum(lambda);
-            j = find(cumsum_lambda >= 0, 1, 'last');
-
-            if isempty(j)
-                D_KY = 0;
-            elseif j == length(lambda)
-                D_KY = length(lambda);
-            else
-                D_KY = j + cumsum_lambda(j) / abs(lambda(j + 1));
-            end
-        end
-    end
-
-    %% ====================================================================
-    %              INTERNALIZED ACTIVATION FUNCTIONS
-    % =====================================================================
-    % Internalized from src/nonlinearities/ to make SRNNModel2 standalone.
-
-    methods (Static)
-        function y = piecewiseSigmoid(x, a, c)
-            % PIECEWISESIGMOID A piecewise linear/quadratic sigmoid activation function.
-            % Internalized from src/nonlinearities/piecewiseSigmoid.m
-
-            if a < 0 || a > 1
-                error('Parameter "a" must be between 0 and 1.');
-            end
-            a = a / 2;
-
-            if a == 0.5
-                y_linear = (x - c) + 0.5;
-                y = min(max(y_linear, 0), 1);
-            else
-                y = zeros(size(x));
-                k = 0.5 / (1 - 2*a);
-                x1 = c + a - 1;
-                x2 = c - a;
-                x3 = c + a;
-                x4 = c + 1 - a;
-
-                mask_left_quad = (x >= x1) & (x < x2);
-                mask_linear = (x >= x2) & (x <= x3);
-                mask_right_quad = (x > x3) & (x <= x4);
-                mask_right_sat = (x > x4);
-
-                if any(mask_left_quad, 'all')
-                    y(mask_left_quad) = k * (x(mask_left_quad) - x1).^2;
-                end
-                if any(mask_linear, 'all')
-                    y(mask_linear) = (x(mask_linear) - c) + 0.5;
-                end
-                if any(mask_right_quad, 'all')
-                    y(mask_right_quad) = 1 - k * (x(mask_right_quad) - x4).^2;
-                end
-                if any(mask_right_sat, 'all')
-                    y(mask_right_sat) = 1;
-                end
-            end
-        end
-
-        function dy = piecewiseSigmoidDerivative(x, a, c)
-            % PIECEWISESIGMOIDDERIVATIVE First derivative of the piecewise sigmoid.
-            % Internalized from src/nonlinearities/piecewiseSigmoidDerivative.m
-
-            if a < 0 || a > 1
-                error('Parameter "a" must be between 0 and 1.');
-            end
-            a = a / 2;
-            dy = zeros(size(x), 'like', x);
-
-            if a == 0.5
-                breakpoint1 = c - 0.5;
-                breakpoint2 = c + 0.5;
-                mask_linear = (x >= breakpoint1) & (x <= breakpoint2);
-                dy(mask_linear) = 1;
-            else
-                k = 0.5 / (1 - 2*a);
-                x1 = c + a - 1;
-                x2 = c - a;
-                x3 = c + a;
-                x4 = c + 1 - a;
-
-                mask_left_quad = (x >= x1) & (x < x2);
-                mask_linear = (x >= x2) & (x <= x3);
-                mask_right_quad = (x > x3) & (x <= x4);
-
-                if any(mask_left_quad)
-                    dy(mask_left_quad) = 2 * k * (x(mask_left_quad) - x1);
-                end
-                if any(mask_linear)
-                    dy(mask_linear) = 1;
-                end
-                if any(mask_right_quad)
-                    dy(mask_right_quad) = -2 * k * (x(mask_right_quad) - x4);
-                end
-            end
-        end
-
-        function y = logisticSigmoid(x)
-            % LOGISTICSIGMOID Standard logistic sigmoid activation function.
-            % Internalized from src/nonlinearities/logisticSigmoid.m
-            y = 1 ./ (1 + exp(-4 * x));
-        end
-
-        function dy = logisticSigmoidDerivative(x)
-            % LOGISTICSIGMOIDDERIVATIVE First derivative of the logistic sigmoid.
-            % Internalized from src/nonlinearities/logisticSigmoidDerivative.m
-            sigmoid_val = 1 ./ (1 + exp(-4 * x));
-            dy = 4 * sigmoid_val .* (1 - sigmoid_val);
-        end
-
-        function y = tanhActivation(x)
-            % TANHACTIVATION Hyperbolic tangent activation function.
-            % Internalized from src/nonlinearities/tanhActivation.m
-            y = tanh(x);
-        end
-
-        function dy = tanhActivationDerivative(x)
-            % TANHACTIVATIONDERIVATIVE First derivative of the hyperbolic tangent.
-            % Internalized from src/nonlinearities/tanhActivationDerivative.m
-            dy = 1 - tanh(x).^2;
-        end
-    end
-
-    %% ====================================================================
-    %              INTERNALIZED STIMULUS GENERATION
-    % =====================================================================
-    % Internalized from src/generate_stimulus/ to make SRNNModel2 standalone.
-
-    methods (Static, Access = protected)
-        function [u_ex, t_ex] = generate_external_input(params, T, fs, rng_seed, input_config)
-            % GENERATE_EXTERNAL_INPUT Generate external input for SRNN simulation.
-            % Internalized from src/generate_stimulus/generate_external_input.m
-
-            % Check for custom generator function
-            if isfield(input_config, 'generator') && isa(input_config.generator, 'function_handle')
-                [u_ex, t_ex] = input_config.generator(params, T, fs, rng_seed, input_config);
-                return;
-            end
-
-            % Standard sparse step stimulus generation
-            rng(rng_seed);
-
-            dt = 1 / fs;
-            t_ex = (0:dt:T)';
-            nt = length(t_ex);
-
-            n_steps = input_config.n_steps;
-            step_density = input_config.step_density;
-            amp = input_config.amp;
-            no_stim_pattern = input_config.no_stim_pattern;
-            intrinsic_drive = input_config.intrinsic_drive;
-
-            step_period = fix(T / n_steps);
-            step_length = round(step_period * fs);
-
-            if isfield(input_config, 'positive_only') && input_config.positive_only
-                random_sparse_step = amp * abs(randn(params.n, n_steps));
-            else
-                random_sparse_step = amp * randn(params.n, n_steps);
-            end
-
-            sparse_mask = false(params.n, n_steps);
-
-            if isfield(input_config, 'step_density_E')
-                density_E = input_config.step_density_E;
-            else
-                density_E = step_density;
-            end
-
-            if isfield(input_config, 'step_density_I')
-                density_I = input_config.step_density_I;
-            else
-                density_I = step_density;
-            end
-
-            if isfield(params, 'E_indices') && isfield(params, 'I_indices')
-                E_idx = params.E_indices;
-                I_idx = params.I_indices;
-            else
-                f_val = 0.5;
-                if isfield(params, 'f')
-                    f_val = params.f;
-                end
-                n_E = round(params.n * f_val);
-                E_idx = 1:n_E;
-                I_idx = (n_E + 1):params.n;
-            end
-
-            sparse_mask(E_idx, :) = rand(length(E_idx), n_steps) < density_E;
-            sparse_mask(I_idx, :) = rand(length(I_idx), n_steps) < density_I;
-
-            random_sparse_step = random_sparse_step .* sparse_mask;
-            random_sparse_step(:, no_stim_pattern) = 0;
-
-            u_ex = zeros(params.n, nt);
-            for step_idx = 1:n_steps
-                start_idx = (step_idx - 1) * step_length + 1;
-                end_idx = min(step_idx * step_length, nt);
-                if start_idx > nt
-                    break;
-                end
-                u_ex(:, start_idx:end_idx) = repmat(random_sparse_step(:, step_idx), 1, end_idx - start_idx + 1);
-            end
-
-            u_ex = u_ex + intrinsic_drive;
         end
     end
 
