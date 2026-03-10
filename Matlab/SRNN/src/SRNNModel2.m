@@ -13,11 +13,6 @@ classdef SRNNModel2 < cRNN
     %
     % See also: cRNN, LNN, SRNN_ESN_reservoir
 
-    %% SRNN-Specific Properties
-    properties
-        rescale_by_abscissa = false % Whether to apply 1/abscissa_0 scaling
-    end
-
     %% Spike-Frequency Adaptation (SFA) Properties
     properties
         n_a_E = 0                   % Number of adaptation timescales for E neurons
@@ -54,12 +49,7 @@ classdef SRNNModel2 < cRNN
 
     %% SRNN Dependent Properties
     properties (Dependent)
-        default_val         % Normalization factor F = 1/sqrt(N*alpha*(2-alpha))
-        mu_se               % Sparse excitatory mean
-        mu_si               % Sparse inhibitory mean
-        sigma_se            % Sparse excitatory std dev
-        sigma_si            % Sparse inhibitory std dev
-        R                   % Theoretical spectral radius (Harris 2023 Eq 18)
+        R                   % Theoretical spectral radius (from connectivity strategy)
         N_sys_eqs           % Total state dimension
     end
 
@@ -88,6 +78,9 @@ classdef SRNNModel2 < cRNN
             % Set default stimulus strategy
             obj.stimulus = StepStimulus();
 
+            % Set default connectivity strategy (RMT with SRNN defaults)
+            obj.connectivity = RMTConnectivity();
+
             % Build legacy function handles from activation strategy
             obj.activation_function = @(x) obj.activation.apply(x);
             obj.activation_function_derivative = @(x) obj.activation.derivative(x);
@@ -106,52 +99,12 @@ classdef SRNNModel2 < cRNN
     %% SRNN Dependent Property Getters
     methods
 
-        function val = get.default_val(obj)
-            % DEFAULT_VAL Normalization factor F = 1/sqrt(N*alpha*(2-alpha))
-            % Scaling factor which yields R=1 when all tilde parameters are equal.
-            % See parameter_table.md for derivation (Harris 2023).
-            val = 1 / sqrt(obj.n * obj.alpha * (2 - obj.alpha));
-        end
-
-        function val = get.mu_se(obj)
-            if isempty(obj.mu_E_tilde)
-                val = NaN;
-            else
-                val = obj.alpha * (obj.mu_E_tilde + obj.E_W);
-            end
-        end
-
-        function val = get.mu_si(obj)
-            if isempty(obj.mu_I_tilde)
-                val = NaN;
-            else
-                val = obj.alpha * (obj.mu_I_tilde + obj.E_W);
-            end
-        end
-
-        function val = get.sigma_se(obj)
-            if isempty(obj.sigma_E_tilde) || isempty(obj.mu_E_tilde)
-                val = NaN;
-            else
-                mu_eff = obj.mu_E_tilde + obj.E_W;
-                val = sqrt(obj.alpha * (1 - obj.alpha) * mu_eff^2 + obj.alpha * obj.sigma_E_tilde^2);
-            end
-        end
-
-        function val = get.sigma_si(obj)
-            if isempty(obj.sigma_I_tilde) || isempty(obj.mu_I_tilde)
-                val = NaN;
-            else
-                mu_eff = obj.mu_I_tilde + obj.E_W;
-                val = sqrt(obj.alpha * (1 - obj.alpha) * mu_eff^2 + obj.alpha * obj.sigma_I_tilde^2);
-            end
-        end
-
         function val = get.R(obj)
-            if isnan(obj.sigma_se) || isnan(obj.sigma_si)
-                val = NaN;
+            % R Theoretical spectral radius — delegates to connectivity strategy.
+            if ~isempty(obj.connectivity) && isprop(obj.connectivity, 'R')
+                val = obj.connectivity.R;
             else
-                val = sqrt(obj.n * (obj.f * obj.sigma_se^2 + (1 - obj.f) * obj.sigma_si^2)) * obj.level_of_chaos;
+                val = NaN;
             end
         end
 
@@ -403,7 +356,7 @@ classdef SRNNModel2 < cRNN
 
             params = get_params@cRNN(obj);
 
-            % RMT computed values
+            % RMT computed values (from connectivity strategy)
             params.R = obj.R;
 
             % Computed E/I params
@@ -447,10 +400,10 @@ classdef SRNNModel2 < cRNN
     %% Protected Build Sub-Methods (SRNN overrides)
     methods (Access = protected)
         function build_network(obj)
-            % BUILD_NETWORK Create W and set SRNN-specific defaults.
+            % BUILD_NETWORK Set SRNN-specific defaults, then delegate to cRNN.
             %
-            % Calls cRNN.build_network() for RMT connectivity, then applies
-            % SRNN-specific rescale_by_abscissa and tau_a defaults.
+            % Sets tau_a defaults, then calls cRNN.build_network() which
+            % delegates to the connectivity strategy.
 
             % Compute tau_a arrays if n_a > 0 but tau_a not set
             if obj.n_a_E > 0 && isempty(obj.tau_a_E)
@@ -460,21 +413,8 @@ classdef SRNNModel2 < cRNN
                 obj.tau_a_I = logspace(log10(0.25), log10(10), obj.n_a_I);
             end
 
-            % Call base class build_network (RMT connectivity)
+            % Call base class build_network (delegates to connectivity strategy)
             build_network@cRNN(obj);
-
-            % SRNN-specific: rescale by spectral abscissa
-            if obj.rescale_by_abscissa
-                W_eigs = eig(obj.W);
-                abscissa_0 = max(real(W_eigs));
-                gamma = 1 / abscissa_0;
-                obj.W = gamma * obj.W;  % Already scaled by level_of_chaos in base
-                W_eigs_rescaled = eig(obj.W);
-                fprintf('Rescaled by abscissa: spectral radius = %.3f, abscissa = %.3f\n', ...
-                    max(abs(W_eigs_rescaled)), max(real(W_eigs_rescaled)));
-            end
-
-            fprintf('Theoretical R = %.3f\n', obj.R);
         end
 
         function validate(obj)
@@ -495,8 +435,10 @@ classdef SRNNModel2 < cRNN
                 error('SRNNModel:InvalidParams', 'tau_a_I must be set when n_a_I > 0');
             end
 
-            if obj.level_of_chaos <= 0
-                warning('SRNNModel:InvalidParams', 'level_of_chaos should be > 0. Current: %.2f', obj.level_of_chaos);
+            if ~isempty(obj.connectivity) && isprop(obj.connectivity, 'level_of_chaos')
+                if obj.connectivity.level_of_chaos <= 0
+                    warning('SRNNModel:InvalidParams', 'level_of_chaos should be > 0. Current: %.2f', obj.connectivity.level_of_chaos);
+                end
             end
         end
     end

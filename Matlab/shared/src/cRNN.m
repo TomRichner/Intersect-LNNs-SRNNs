@@ -30,16 +30,6 @@ classdef (Abstract) cRNN < handle
         n = 100                     % Total number of neurons
         f = 0.5                     % Fraction of excitatory neurons
         indegree                    % Expected in-degree (default: fully connected = n)
-
-        % RMT tilde-notation parameters (Harris 2023)
-        mu_E_tilde                  % Normalized excitatory mean
-        mu_I_tilde                  % Normalized inhibitory mean
-        sigma_E_tilde               % Normalized excitatory std dev
-        sigma_I_tilde               % Normalized inhibitory std dev
-        E_W = 0                     % Mean offset: added to both mu_E_tilde and mu_I_tilde
-        zrs_mode = 'none'           % ZRS mode: 'none', 'ZRS', 'SZRS', 'Partial_SZRS'
-
-        level_of_chaos = 1.0        % Scaling factor for W (spectral radius control)
     end
 
     %% ====================================================================
@@ -70,6 +60,7 @@ classdef (Abstract) cRNN < handle
     properties
         activation                  % Activation subclass (nonlinearity)
         stimulus                    % Stimulus subclass (input generation)
+        connectivity                % Connectivity subclass (weight matrix)
     end
 
     %% ====================================================================
@@ -338,14 +329,7 @@ classdef (Abstract) cRNN < handle
             params.f = obj.f;
             params.indegree = obj.indegree;
             params.alpha = obj.alpha;
-            params.level_of_chaos = obj.level_of_chaos;
 
-            % RMT parameters
-            params.mu_E_tilde = obj.mu_E_tilde;
-            params.mu_I_tilde = obj.mu_I_tilde;
-            params.sigma_E_tilde = obj.sigma_E_tilde;
-            params.sigma_I_tilde = obj.sigma_I_tilde;
-            params.E_W = obj.E_W;
 
             % E/I indices
             params.n_E = obj.n_E;
@@ -359,6 +343,15 @@ classdef (Abstract) cRNN < handle
 
             % Activation strategy (stored for use in ODE RHS)
             params.activation = obj.activation;
+
+            % Connectivity params (merged from strategy)
+            if ~isempty(obj.connectivity)
+                conn_params = obj.connectivity.get_params();
+                conn_fields = fieldnames(conn_params);
+                for i = 1:length(conn_fields)
+                    params.(conn_fields{i}) = conn_params.(conn_fields{i});
+                end
+            end
 
             % Connection matrix
             if ~isempty(obj.W)
@@ -399,44 +392,24 @@ classdef (Abstract) cRNN < handle
     % =====================================================================
     methods (Access = protected)
         function build_network(obj)
-            % BUILD_NETWORK Create W via RMTMatrix.
+            % BUILD_NETWORK Create W via connectivity strategy.
             %
-            % Sets RNG seed, fills in default RMT tilde parameters,
-            % creates and scales W. Subclasses can override or call
-            % build_network@cRNN() then do additional work.
+            % Delegates to obj.connectivity.build(), then copies W.
+            % Subclasses can override or call build_network@cRNN()
+            % then do additional work.
 
-            rng(obj.rng_seeds(1));
+            if isempty(obj.connectivity)
+                error('cRNN:NoConnectivity', 'No connectivity strategy set. Assign obj.connectivity before build().');
+            end
 
             % Default indegree to fully connected
             if isempty(obj.indegree)
                 obj.indegree = obj.n;
             end
 
-            % Compute RMT tilde defaults
-            alph = obj.indegree / obj.n;
-            F = 1 / sqrt(obj.n * alph * (2 - alph));
-
-            if isempty(obj.mu_E_tilde),    obj.mu_E_tilde = 3*F;     end
-            if isempty(obj.mu_I_tilde),    obj.mu_I_tilde = -4*F;    end
-            if isempty(obj.sigma_E_tilde), obj.sigma_E_tilde = F;    end
-            if isempty(obj.sigma_I_tilde), obj.sigma_I_tilde = F;    end
-
-            % Create W using RMTMatrix
-            rmt = RMTMatrix(obj.n);
-            rmt.alpha = alph;
-            rmt.f = obj.f;
-            rmt.mu_tilde_e = obj.mu_E_tilde + obj.E_W;
-            rmt.mu_tilde_i = obj.mu_I_tilde + obj.E_W;
-            rmt.sigma_tilde_e = obj.sigma_E_tilde;
-            rmt.sigma_tilde_i = obj.sigma_I_tilde;
-            rmt.zrs_mode = obj.zrs_mode;
-
-            obj.W = obj.level_of_chaos * rmt.W;
-
-            % Report info
-            W_eigs = eig(obj.W);
-            fprintf('W created: spectral radius = %.3f, abscissa = %.3f\n', ...
-                max(abs(W_eigs)), max(real(W_eigs)));
+            % Delegate to connectivity strategy
+            obj.connectivity.build(obj.n, obj.f, obj.indegree, obj.rng_seeds(1));
+            obj.W = obj.connectivity.W;
         end
 
         function build_stimulus(obj)
