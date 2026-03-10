@@ -13,8 +13,8 @@ clear; clc; close all;
 setup_paths();
 
 %% Common parameters
-n = 100;                      % Number of neurons
-rng_seed = 42;                % Network seed
+n = 300;                      % Number of neurons
+rng_seed = 41;                % Network seed
 fs = 200;                     % Sampling frequency (Hz)
 
 % MC protocol (seconds -> samples)

@@ -37,11 +37,18 @@ where `f = activation(W_r * x + W_in * I(t) + mu)` is a nonlinearity that modula
 
 **Implementation:** [`Matlab/LNN/src/LNN.m`](Matlab/LNN/src/LNN.m)
 
-### Shared Infrastructure
+### Shared Infrastructure (`Matlab/shared/src/`)
 
-Both models share:
-- **`RMTMatrix.m`** — Random Matrix Theory connectivity generator with E/I structure, sparsity, and spectral radius control
-- **ESN reservoir subclasses** — `SRNN_ESN_reservoir` and `LNN_ESN_reservoir` extend the base models with memory capacity measurement protocols (washout → train → test, ridge regression readouts)
+Both models inherit from a common **`cRNN`** abstract base class that provides:
+- **`build()` → `run()` → `plot()`** lifecycle with ODE integration, decimation, and Lyapunov computation
+- **Strategy pattern** for swappable components:
+  - **`Connectivity`** (base) / **`RMTConnectivity`** — Random Matrix Theory connectivity with E/I structure and spectral radius control, backed by **`RMTMatrix.m`**
+  - **`Stimulus`** (base) / **`StepStimulus`**, **`SinusoidalStimulus`**, **`ESNStimulus`** — input generation strategies
+  - **`Activation`** (base) / **`TanhActivation`**, **`SigmoidActivation`**, **`PiecewiseSigmoid`** — activation function strategies
+- **`parse_name_value_pairs()`** — generic constructor parsing that auto-forwards unknown params to connectivity/stimulus/activation strategies
+- **`W_in`** input weight matrix — both models use `W_in` explicitly in their dynamics (`dx/dt` includes `W_in * u_raw`)
+
+**Unified ESN:** **`ESN_reservoir`** wraps any `cRNN` subclass via composition for memory capacity measurement (washout → train → test, ridge regression, Lyapunov). Replaces the deprecated `SRNN_ESN_reservoir` and `LNN_ESN_reservoir`.
 
 ---
 
@@ -55,11 +62,11 @@ Both architectures are evaluated as reservoirs using a standard memory capacity 
 2. Train linear readouts via ridge regression to reconstruct delayed versions `u(t-d)`
 3. Compute R²_d for each delay and sum to obtain total MC
 
-**SRNN comparison** ([`example_memory_capacity.m`](Matlab/SRNN/scripts/example_memory_capacity.m)):
-Compares three adaptation conditions — Baseline (no adaptation), SFA only, and SFA + STD — demonstrating that biophysical adaptation mechanisms extend memory capacity beyond the edge-of-chaos baseline.
+**SRNN comparison** ([`test_ESN_SRNN.m`](Matlab/SRNN/scripts/test_ESN_SRNN.m)):
+Compares three adaptation conditions — Baseline (no adaptation), SFA only, and SFA + STD — demonstrating that biophysical adaptation mechanisms extend memory capacity beyond the edge-of-chaos baseline. Includes Lyapunov exponent computation.
 
-**LNN comparison** ([`example_memory_capacity_LNN.m`](Matlab/LNN/scripts/example_memory_capacity_LNN.m)):
-Compares the LTC reservoir across spectral radius settings (R = 0.5, 1.0, 1.5), examining how the input-dependent time constants of the LTC ODE interact with reservoir stability.
+**LNN comparison** ([`test_ESN_LNN.m`](Matlab/LNN/scripts/test_ESN_LNN.m)):
+Compares the LTC reservoir across spectral radius settings (R = 0.5, 1.0, 1.5), examining how the input-dependent time constants of the LTC ODE interact with reservoir stability. Includes Lyapunov exponent computation.
 
 ---
 
@@ -68,32 +75,44 @@ Compares the LTC reservoir across spectral radius settings (R = 0.5, 1.0, 1.5), 
 ```
 Intersect-LNNs-SRNNs/
 ├── Matlab/
+│   ├── shared/
+│   │   └── src/
+│   │       ├── cRNN.m                  # Abstract base class (build/run/plot lifecycle)
+│   │       ├── ESN_reservoir.m         # Unified ESN wrapper (composition-based)
+│   │       ├── ESNStimulus.m           # ESN scalar input + sparse W_in generation
+│   │       ├── Connectivity.m          # Base connectivity strategy
+│   │       ├── RMTConnectivity.m       # RMT connectivity (spectral radius control)
+│   │       ├── RMTMatrix.m             # Low-level RMT matrix generator
+│   │       ├── Stimulus.m              # Base stimulus strategy
+│   │       ├── StepStimulus.m           # Step-function stimulus (for SRNN)
+│   │       ├── SinusoidalStimulus.m     # Sinusoidal stimulus (for LNN)
+│   │       ├── Activation.m            # Base activation strategy
+│   │       ├── TanhActivation.m        # tanh activation
+│   │       ├── SigmoidActivation.m     # sigmoid activation
+│   │       └── PiecewiseSigmoid.m      # Piecewise sigmoid (for SRNN)
+│   │
 │   ├── SRNN/
 │   │   ├── src/
-│   │   │   ├── SRNNModel2.m            # Core SRNN class (E/I network with SFA + STD)
-│   │   │   ├── SRNN_ESN_reservoir.m    # ESN subclass for memory capacity measurement
-│   │   │   └── RMTMatrix.m             # RMT connectivity generator (shared)
-│   │   ├── scripts/
-│   │   │   ├── setup_paths.m
-│   │   │   ├── test_SRNN2_defaults.m   # Quick build/run/plot test
-│   │   │   └── example_memory_capacity.m
-│   │   ├── data/
-│   │   └── figs/
+│   │   │   ├── SRNNModel2.m            # SRNN class (E/I network with SFA + STD)
+│   │   │   └── SRNN_ESN_reservoir.m    # (Deprecated) use ESN_reservoir instead
+│   │   └── scripts/
+│   │       ├── setup_paths.m
+│   │       ├── test_SRNN2_defaults.m    # Quick build/run/plot test
+│   │       └── test_ESN_SRNN.m          # ESN memory capacity (Baseline vs SFA vs STD)
 │   │
 │   └── LNN/
 │       ├── src/
-│       │   ├── LNN.m                   # Core LTC class (Hasani et al. 2021)
-│       │   └── LNN_ESN_reservoir.m     # ESN subclass for memory capacity measurement
-│       ├── scripts/
-│       │   ├── setup_paths.m
-│       │   ├── test_LNN.m              # Quick build/run/plot test
-│       │   └── example_memory_capacity_LNN.m
-│       ├── data/
-│       └── figs/
+│       │   ├── LNN.m                   # LTC class (Hasani et al. 2021)
+│       │   └── LNN_ESN_reservoir.m     # (Deprecated) use ESN_reservoir instead
+│       └── scripts/
+│           ├── setup_paths.m
+│           ├── test_LNN.m              # Quick build/run/plot test
+│           └── test_ESN_LNN.m          # ESN memory capacity (R=0.5, 1.0, 1.5)
 │
 ├── Docs/
 │   ├── SRNN_docs/                      # SRNN equations, parameter tables, code structure
-│   └── LNN_docs/                       # LTC papers, mathematical notes, LFM 2.5 notes
+│   ├── LNN_docs/                       # LTC papers, mathematical notes, LFM 2.5 notes
+│   └── cRNN_base_class_refactor.md     # Refactoring notes for SRNN/LNN unification
 │
 ├── JuliaLang/                          # (Planned) Julia implementations
 └── README.md
@@ -112,8 +131,8 @@ setup_paths()
 % Quick test (build → run → plot)
 run test_SRNN2_defaults.m
 
-% Memory capacity comparison (Baseline vs SFA vs SFA+STD)
-run example_memory_capacity.m
+% ESN memory capacity (Baseline vs SFA vs SFA+STD)
+run test_ESN_SRNN.m
 ```
 
 ### LNN
@@ -125,11 +144,24 @@ setup_paths()
 % Quick test
 run test_LNN.m
 
-% Memory capacity comparison across spectral radii
-run example_memory_capacity_LNN.m
+% ESN memory capacity (R=0.5, 1.0, 1.5)
+run test_ESN_LNN.m
 ```
 
-> **Note:** `Matlab/LNN/scripts/setup_paths.m` adds both `LNN/src/` and `SRNN/src/` to the path, since the LNN uses `RMTMatrix.m` from the SRNN source directory.
+### ESN_reservoir (unified API)
+
+```matlab
+% Composition-based: wrap any cRNN subclass
+model = SRNNModel2('n', 300, 'level_of_chaos', 1.0);
+esn = ESN_reservoir(model, 'T_wash', 2000, 'T_train', 5000, 'T_test', 5000, 'd_max', 600);
+esn.build();
+[MC, R2_d] = esn.run_memory_capacity();
+esn.plot_memory_capacity();
+esn.plot_esn_timeseries([1, 50, 100, 200]);
+esn.model.plot();  % Model-specific internal dynamics
+```
+
+> **Note:** `setup_paths.m` adds both `<model>/src/` and `shared/src/` to the path.
 
 ---
 
@@ -143,9 +175,7 @@ Compare the stability of SRNN and LNN networks with random connectivity under st
 
 - **Port the FractionalReservoir analysis framework** into this repository. The [`ParamSpaceAnalysis2`](https://github.com/TomRichner/FractionalReservoir/blob/main/src/ParamSpaceAnalysis2.m) class already supports multi-dimensional grid sweeps, batch execution with random ordering, and Lyapunov exponent computation. The [`Fig_2_fraction_excitatory_analysis.m`](https://github.com/TomRichner/FractionalReservoir/blob/main/scripts/Fig_2_fraction_excitatory_analysis.m) script demonstrates a sweep over the fraction of excitatory neurons (`f`) across adaptation conditions, computing Largest Lyapunov Exponent (LLE) and firing rate distributions.
 
-- **Refactor for model-agnostic use.** Both `LNN.m` and `SRNNModel2.m` share a common interface (`build()` → `run()` → `plot()`), which makes it feasible to create:
-  - A **common ESN class** that both models can plug into
-  - A **common `ParamSpaceAnalysis` class** that works with either model, sweeping over shared parameters (e.g., `f`, `level_of_chaos`, `n`, `indegree`) and model-specific parameters (e.g., `tau_d`/`c_E` for SRNN, `tau`/`A` for LNN)
+- **~~Refactor for model-agnostic use.~~** ✅ **Done.** Both models now inherit from `cRNN` with a shared strategy pattern and unified `ESN_reservoir`. Next step: create a **common `ParamSpaceAnalysis` class** that works with either model, sweeping over shared parameters (e.g., `f`, `level_of_chaos`, `n`, `indegree`) and model-specific parameters (e.g., `tau_d`/`c_E` for SRNN, `tau`/`A` for LNN)
 
 - **Key metrics to compare:** Largest Lyapunov Exponent (LLE), firing rate distributions, sensitivity to the fraction excitatory (`f`), and response to step-function stimulus changes
 

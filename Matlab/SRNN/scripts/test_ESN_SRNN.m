@@ -15,7 +15,7 @@ setup_paths();
 %% Common parameters
 n = 300;                      % Number of neurons
 level_of_chaos = 1.0;         % Moderate chaos level
-rng_seed_net = 42;            % Network seed
+rng_seed_net = 41;            % Network seed
 rng_seed_stim = 43;           % Stimulus seed
 fs = 200;                     % Sampling frequency (Hz)
 
