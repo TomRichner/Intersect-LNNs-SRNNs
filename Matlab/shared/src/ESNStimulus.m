@@ -107,16 +107,15 @@ classdef ESNStimulus < Stimulus
                     obj.input_type);
             end
 
-            %% 3. Map scalar to neural input
+            %% 3. Map scalar to neural input (for u_ex storage / plotting)
             dt = 1 / fs;
             obj.t_ex = (0:(T_total-1))' * dt;
-            obj.u_ex = obj.W_in_esn * obj.u_scalar';  % n × T
+            obj.u_ex = obj.W_in_esn * obj.u_scalar';  % n × T (for cRNN.build_stimulus)
 
-            %% 4. Build interpolant — returns neural-space input (n-dim)
-            % The interpolant returns pre-multiplied input: W_in_esn * u_scalar(t)
-            % Models like SRNN's dynamics_fast use this directly.
-            % For LNN, cRNN.build_stimulus sets W_in = eye(n) so W_in * I_t = I_t.
-            obj.u_interpolant = griddedInterpolant(obj.t_ex, obj.u_ex', 'linear', 'none');
+            %% 4. Build interpolant — returns scalar u(t)
+            % Models apply W_in in their dynamics, so the interpolant
+            % stores only the raw scalar input signal.
+            obj.u_interpolant = griddedInterpolant(obj.t_ex, obj.u_scalar, 'linear', 'none');
 
             fprintf('ESNStimulus built: %d samples, %d neurons receive input\n', ...
                 T_total, sum(obj.W_in_esn ~= 0));

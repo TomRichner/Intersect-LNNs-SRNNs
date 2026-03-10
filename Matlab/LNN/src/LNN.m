@@ -381,17 +381,14 @@ classdef LNN < cRNN
 
             params = obj.cached_params;
 
-            % Detect input dimension from interpolant (may differ from n_in for ESN)
-            I_test = obj.u_interpolant(t_d(1))';
-            n_input_dim = length(I_test);
-
             % Compute u, f, tau_sys at decimated times
-            u_d = zeros(nt_d, n_input_dim);
+            n_in = size(params.W_in, 2);  % Actual input dimension from W_in
+            u_d = zeros(nt_d, n_in);
             f_d = zeros(nt_d, params.n);
             tau_sys_d = zeros(nt_d, params.n);
 
             for k = 1:nt_d
-                I_k = obj.u_interpolant(t_d(k))';  % (n_input_dim × 1)
+                I_k = obj.u_interpolant(t_d(k))';  % (n_in × 1)
                 u_d(k, :) = I_k';
                 z = params.W * x_d(k, :)' + params.W_in * I_k + params.mu;
                 f_k = params.activation.apply(z);

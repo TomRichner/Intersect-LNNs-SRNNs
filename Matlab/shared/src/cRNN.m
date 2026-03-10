@@ -428,11 +428,11 @@ classdef (Abstract) cRNN < handle
             obj.u_ex = obj.stimulus.u_ex;
             obj.u_interpolant = obj.stimulus.u_interpolant;
 
-            % If stimulus provides ESN input weights (pre-multiplied input),
-            % set W_in = eye(n) so dynamics_ltc's W_in * I_t = I_t.
-            % SRNN doesn't use W_in in dynamics; LNN does.
+            % If stimulus provides ESN input weights, use them as W_in.
+            % Both SRNN and LNN apply W_in in their dynamics, so this
+            % maps the scalar ESN input to the correct sparse subset of neurons.
             if isprop(obj.stimulus, 'W_in_esn') && ~isempty(obj.stimulus.W_in_esn)
-                obj.W_in = eye(obj.n);
+                obj.W_in = obj.stimulus.W_in_esn;
             end
 
             fprintf('Stimulus ready: %d time points\n', length(obj.t_ex));

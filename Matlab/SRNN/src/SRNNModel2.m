@@ -435,6 +435,11 @@ classdef SRNNModel2 < cRNN
 
             % Call base class build_network (delegates to connectivity strategy)
             build_network@cRNN(obj);
+
+            % Default W_in = eye(n): external input maps 1-to-1 to neurons
+            if isempty(obj.W_in)
+                obj.W_in = eye(obj.n);
+            end
         end
 
         function validate(obj)
@@ -854,7 +859,8 @@ classdef SRNNModel2 < cRNN
             % State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
 
             %% Interpolate external input
-            u = params.u_interpolant(t)';  % n x 1
+            u_raw = params.u_interpolant(t)';  % (n_in x 1) raw input
+            u = params.W_in * u_raw;           % (n x 1) projected input
 
             %% Load parameters
             n = params.n;
