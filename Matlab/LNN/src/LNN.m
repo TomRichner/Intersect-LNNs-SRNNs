@@ -1,11 +1,12 @@
-classdef LNN < handle
-    % LNN Liquid Time-Constant Neural Network class
+classdef LNN < cRNN
+    % LNN Liquid Time-Constant Neural Network class.
     %
     % Implements the LTC ODE from Hasani et al. (2021):
     %   dx/dt = -(1./tau + abs(f)) .* x + f .* A
-    % where f = activation(W_r * x + W_in * I(t) + mu)
+    % where f = activation(W * x + W_in * I(t) + mu)
     %
-    % Standalone class — only external dependency is RMTMatrix.m.
+    % Inherits shared properties and lifecycle from cRNN.
+    % Uses strategy objects for activation, stimulus, and connectivity.
     %
     % Usage:
     %   model = LNN('n', 50, 'n_in', 2);
@@ -13,16 +14,15 @@ classdef LNN < handle
     %   model.run();
     %   model.plot();
     %
-    % See also: RMTMatrix, SRNNModel2
+    % See also: cRNN, SRNNModel2, RMTConnectivity
 
-    %% Network Architecture Properties
+    %% LNN-Specific Properties
     properties
-        n = 100                     % Number of hidden neurons
         n_in = 2                    % Input dimension
-        activation = 'tanh'         % 'tanh', 'sigmoid', 'piecewise_sigmoid', 'relu'
+        activation_name = 'tanh'    % Legacy name: 'tanh', 'sigmoid', 'piecewise_sigmoid', 'relu'
     end
 
-    %% LTC Parameter Defaults
+    %% LTC Parameter Initialization
     properties
         tau_init = 1.0              % Scalar default for tau vector initialization
         A_init = 0.0                % Scalar default for A vector initialization
@@ -30,183 +30,205 @@ classdef LNN < handle
         sigma_b = 1.0               % Bias initialization std scale
     end
 
-    %% Piecewise Sigmoid Parameters (only used when activation = 'piecewise_sigmoid')
+    %% Solver Properties (LNN-specific)
     properties
-        S_a = 0.9                   % Piecewise sigmoid linear fraction parameter
-        S_c = 0.35                  % Piecewise sigmoid center parameter
-    end
-
-    %% RMT Connectivity Properties (for W_r)
-    properties
-        f = 0.5                     % Fraction of excitatory neurons in RMTMatrix
-        indegree                    % Expected in-degree (default: fully connected = n)
-        mu_E_tilde                  % RMT excitatory mean (default: 3*F)
-        mu_I_tilde                  % RMT inhibitory mean (default: -4*F)
-        sigma_E_tilde               % RMT excitatory std (default: F)
-        sigma_I_tilde               % RMT inhibitory std (default: F)
-        level_of_chaos = 1.0        % Spectral radius scaling factor
-        zrs_mode = 'none'           % ZRS mode: 'none', 'ZRS', 'SZRS', 'Partial_SZRS'
-    end
-
-    %% Simulation Settings Properties
-    properties
-        fs = 400                    % Sampling frequency (Hz); MaxStep = 1/fs
-        T_range = [0, 10]           % Simulation time interval [start, end]
-        T_plot                      % Plotting time interval (defaults to T_range)
-        ode_solver = @ode45         % ODE solver function handle (public, settable)
-        ode_opts                    % ODE options (auto-set from fs if empty)
         solver_mode = 'ode'         % 'ode' or 'fused'
         fused_substeps = 6          % Number of fused solver sub-steps per dt
-        rng_seed = 1                % RNG seed for reproducibility
     end
 
-    %% Storage and Plotting Properties
-    properties
-        store_full_state = true     % Whether to keep full x_out in memory
-        plot_deci                   % Decimation factor for plotting
-        plot_freq = 10              % Target plotting frequency (Hz)
-    end
-
-    %% Input Properties
-    properties
-        input_func                  % Function handle @(t) -> (n_in x 1) for custom input
-        u_ex                        % Stored input matrix (n_in x nt), set in build
-        t_ex                        % Time vector, set in build
-    end
-
-    %% Dependent Properties
-    properties (Dependent)
-        alpha                       % Sparsity = indegree/n
-    end
-
-    %% Protected Properties (build outputs)
+    %% LNN-Specific Protected Properties
     properties (SetAccess = protected)
-        W_r                         % Recurrent weight matrix (n x n)
-        W_in                        % Input weight matrix (n x n_in)
-        mu                          % Bias vector (n x 1)
-        tau                         % Time constant vector (n x 1)
-        A                           % Reversal potential / bias target vector (n x 1)
-        S0                          % Initial state vector (n x 1)
-        u_interpolant               % griddedInterpolant for input
-        is_built = false            % Flag: network is built
-        cached_params               % Cached params struct for fast ODE access
-    end
-
-    %% Results Properties
-    properties (SetAccess = protected)
-        t_out                       % Time vector from solver
-        x_out                       % State trajectory (nt x n)
-        plot_data                   % Struct with decimated data for plotting
-        has_run = false             % Flag: simulation has completed
+        mu                          % Bias vector (n × 1)
+        tau                         % Time constant vector (n × 1)
+        A                           % Reversal potential vector (n × 1)
     end
 
     %% Constructor
     methods
         function obj = LNN(varargin)
-            % LNN Constructor with name-value pairs
+            % LNN Constructor with name-value pairs.
             %
             % Usage:
-            %   model = LNN()                        % All defaults
+            %   model = LNN()                         % All defaults
             %   model = LNN('n', 50, 'n_in', 2)
-            %   model = LNN('activation', 'sigmoid', 'level_of_chaos', 1.5)
+            %   model = LNN('activation_name', 'sigmoid')
+
+            % Call base class constructor
+            obj@cRNN();
+
+            % LNN-specific defaults
+            obj.n = 100;
+            obj.T_range = [0, 10];
+            obj.store_full_state = true;
+            obj.lya_method = 'none';
+            obj.rng_seeds = [1 1];
+
+            % Set default activation strategy
+            obj.activation = TanhActivation();
+
+            % Set default stimulus strategy
+            obj.stimulus = SinusoidalStimulus('n_in', 2);
+
+            % Set default connectivity strategy
+            obj.connectivity = RMTConnectivity();
 
             % Parse name-value pairs
             for i = 1:2:length(varargin)
-                if isprop(obj, varargin{i})
-                    obj.(varargin{i}) = varargin{i+1};
+                prop = varargin{i};
+                val = varargin{i+1};
+
+                if strcmp(prop, 'n_in')
+                    % Also update stimulus
+                    obj.n_in = val;
+                    obj.stimulus = SinusoidalStimulus('n_in', val);
+                elseif strcmp(prop, 'activation_name')
+                    obj.activation_name = val;
+                    obj.activation = LNN.make_activation(val);
+                elseif strcmp(prop, 'input_func')
+                    % Pass to stimulus strategy
+                    obj.stimulus = SinusoidalStimulus('n_in', obj.n_in, 'input_func', val);
+                elseif strcmp(prop, 'level_of_chaos')
+                    obj.connectivity.level_of_chaos = val;
+                elseif strcmp(prop, 'mu_E_tilde')
+                    obj.connectivity.mu_E_tilde = val;
+                elseif strcmp(prop, 'mu_I_tilde')
+                    obj.connectivity.mu_I_tilde = val;
+                elseif strcmp(prop, 'sigma_E_tilde')
+                    obj.connectivity.sigma_E_tilde = val;
+                elseif strcmp(prop, 'sigma_I_tilde')
+                    obj.connectivity.sigma_I_tilde = val;
+                elseif strcmp(prop, 'zrs_mode')
+                    obj.connectivity.zrs_mode = val;
+                elseif strcmp(prop, 'E_W')
+                    obj.connectivity.E_W = val;
+                elseif isprop(obj, prop)
+                    obj.(prop) = val;
                 else
-                    warning('LNN:UnknownProperty', 'Unknown property: %s', varargin{i});
+                    warning('LNN:UnknownProperty', 'Unknown property: %s', prop);
                 end
             end
-
-            % Compute plot_deci from fs and plot_freq if not explicitly set
-            if isempty(obj.plot_deci)
-                obj.plot_deci = max(1, round(obj.fs / obj.plot_freq));
-            end
         end
     end
 
-    %% Dependent Property Getters
+    %% Abstract Method Implementations (from cRNN)
     methods
-        function val = get.alpha(obj)
-            if isempty(obj.indegree)
-                val = 1.0;  % Fully connected
+        function rhs = get_rhs(obj, params)
+            % GET_RHS Return @(t, x) function handle for LTC dynamics.
+            rhs = @(t, x) LNN.dynamics_ltc(t, x, params);
+        end
+
+        function features = get_readout_features(obj)
+            % GET_READOUT_FEATURES Return n × T matrix of raw states.
+            %
+            % For LNN, the readout features are the raw state values x.
+            if ~isempty(obj.state_out)
+                features = obj.state_out';  % n × T
             else
-                val = obj.indegree / obj.n;
+                error('LNN:NoState', 'No state data available.');
             end
+        end
+
+        function J = get_jacobian(obj, S, params)
+            % GET_JACOBIAN Return Jacobian of the LTC ODE at state S.
+            %
+            % For dx/dt = -(1/tau + |f|)*x + f*A
+            % where f = activation(W*x + W_in*I + mu)
+            %
+            % J = -diag(1/tau + |f|) + diag(A.*sign(f) - x.*sign(f)) * diag(f') * W
+            %
+            % Note: This uses the current stimulus interpolant value.
+
+            x = S;
+
+            % Zero input for Jacobian evaluation (static approximation)
+            I_t = zeros(params.n_in, 1);
+
+            % Compute z and f
+            z = params.W * x + params.W_in * I_t + params.mu;
+            f_val = params.activation.apply(z);
+            f_prime = params.activation.derivative(z);
+            f_sign = sign(f_val);
+
+            % Build Jacobian
+            % d/dx_j of [-(1/tau_i + |f_i|)*x_i + f_i*A_i]
+            % Diagonal: -(1/tau_i + |f_i|)
+            % Off-diag via chain rule through f_i = act(sum_j W_ij * x_j + ...)
+            %   d(f_i)/d(x_j) = f'_i * W_ij
+            %   contribution: (-x_i * sign(f_i) + A_i * sign(f_i)) * f'_i * W_ij
+            %                 for the |f| term: d|f|/dx_j = sign(f) * f' * W_ij
+            %   and for the f*A term: d(f*A)/dx_j = A_i * f'_i * W_ij
+
+            diag_decay = -(1 ./ params.tau + abs(f_val));
+            chain_coeff = (params.A - x) .* f_sign .* f_prime;
+
+            J = diag(diag_decay) + diag(chain_coeff) * params.W;
+        end
+
+        function initialize_state(obj)
+            % INITIALIZE_STATE Set initial conditions for LTC network.
+            obj.S0 = 0.01 * randn(obj.n, 1);
         end
     end
 
-    %% Public Methods
+    %% Overridden Methods
     methods
-        function build(obj)
-            % BUILD Initialize the network: create W_r, W_in, mu, tau, A, stimulus
-            %
-            % Delegates to three protected sub-methods (overridable by subclasses):
-            %   1. build_network()   - Create W_r, W_in, mu, tau, A
-            %   2. build_stimulus()  - Generate input, interpolant, S0
-            %   3. finalize_build()  - Validate and cache params
-
-            obj.build_network();
-            obj.build_stimulus();
-            obj.finalize_build();
-        end
-
         function run(obj)
-            % RUN Execute the LTC simulation
+            % RUN Execute the LTC simulation.
             %
-            % Integrates the LTC ODE using ode_solver (default ode45) or
-            % the fused semi-implicit Euler solver.
+            % Handles both ODE and fused solver modes.
 
             if ~obj.is_built
                 error('LNN:NotBuilt', 'Model must be built before running. Call build() first.');
             end
 
-            params = obj.cached_params;
-
-            % Set up ODE options if not provided
-            dt = 1 / obj.fs;
-            if isempty(obj.ode_opts)
-                obj.ode_opts = odeset('RelTol', 1e-6, 'AbsTol', 1e-8, 'MaxStep', dt);
-            end
-
             if strcmpi(obj.solver_mode, 'fused')
-                % Fused semi-implicit Euler solver
+                % Fused semi-implicit Euler solver (LNN-specific)
+                params = obj.cached_params;
                 fprintf('Running LTC with fused solver (%d substeps per dt)...\n', obj.fused_substeps);
                 tic
                 [t_raw, x_raw] = obj.run_fused(params);
                 run_time = toc;
-            else
-                % ODE solver mode
-                % Cache interpolant into params for closure
-                params.u_interpolant = obj.u_interpolant;
-                rhs = @(t, x) LNN.dynamics_ltc(t, x, params);
+                fprintf('Integration complete in %.2f seconds.\n', run_time);
 
-                fprintf('Integrating LTC equations with %s...\n', func2str(obj.ode_solver));
-                tic
-                [t_raw, x_raw] = obj.ode_solver(rhs, obj.t_ex, obj.S0, obj.ode_opts);
-                run_time = toc;
+                obj.t_out = t_raw;
+                obj.state_out = x_raw;
 
-                % Verify output times match input times
-                if length(t_raw) ~= length(obj.t_ex) || max(abs(t_raw - obj.t_ex)) > 1e-9
-                    warning('LNN:TimeMismatch', 'ODE solver output times differ from input. Max diff: %.2e', max(abs(t_raw(:) - obj.t_ex(:))));
+                % Decimate for plotting
+                if obj.store_decimated_state
+                    obj.decimate_and_unpack();
                 end
+
+                if ~obj.store_full_state
+                    obj.state_out = [];
+                end
+
+                obj.has_run = true;
+                fprintf('Simulation complete.\n');
+            else
+                % Standard ODE mode — delegate to base class
+                run@cRNN(obj);
             end
+        end
 
-            fprintf('Integration complete in %.2f seconds.\n', run_time);
+        function params = get_params(obj)
+            % GET_PARAMS Return params struct for LTC ODE.
+            %
+            % Extends cRNN.get_params() with LNN-specific fields.
 
-            obj.t_out = t_raw;
-            obj.x_out = x_raw;
+            params = get_params@cRNN(obj);
 
-            % Decimate for plotting
-            obj.decimate_and_unpack();
+            % LNN-specific
+            params.n_in = obj.n_in;
+            params.activation_name = obj.activation_name;
 
-            obj.has_run = true;
-            fprintf('Simulation complete.\n');
+            % Build outputs (if available)
+            if ~isempty(obj.mu),  params.mu = obj.mu;    end
+            if ~isempty(obj.tau), params.tau = obj.tau;   end
+            if ~isempty(obj.A),   params.A = obj.A;      end
         end
 
         function [fig_handle, ax_handles] = plot(obj, varargin)
-            % PLOT Generate time series plots for LTC simulation
+            % PLOT Generate time series plots for LTC simulation.
             %
             % Usage:
             %   model.plot()
@@ -278,7 +300,7 @@ classdef LNN < handle
                 plot(pd.t, pd.f_vals(:, i), 'Color', cmap(i, :), 'LineWidth', 0.5);
             end
             hold off;
-            title('Nonlinearity f(t) = activation(W_r x + W_{in} I + \mu)');
+            title('Nonlinearity f(t) = activation(W x + W_{in} I + \mu)');
             ylabel('f');
             xlabel('Time (s)');
             xlim(T_plot_arg);
@@ -286,183 +308,40 @@ classdef LNN < handle
 
             linkaxes(ax_handles, 'x');
         end
-
-        function params = get_params(obj)
-            % GET_PARAMS Return params struct for ODE and analysis
-
-            params = struct();
-            params.n = obj.n;
-            params.n_in = obj.n_in;
-            params.activation = obj.activation;
-            params.S_a = obj.S_a;
-            params.S_c = obj.S_c;
-            params.f_frac = obj.f;
-            params.level_of_chaos = obj.level_of_chaos;
-            params.fs = obj.fs;
-            params.rng_seed = obj.rng_seed;
-
-            % Build outputs (if available)
-            if ~isempty(obj.W_r),  params.W_r = obj.W_r;   end
-            if ~isempty(obj.W_in), params.W_in = obj.W_in;  end
-            if ~isempty(obj.mu),   params.mu = obj.mu;      end
-            if ~isempty(obj.tau),  params.tau = obj.tau;     end
-            if ~isempty(obj.A),    params.A = obj.A;        end
-        end
-
-        function clear_results(obj)
-            % CLEAR_RESULTS Free memory by clearing stored state data
-            obj.t_out = [];
-            obj.x_out = [];
-            obj.plot_data = [];
-            obj.has_run = false;
-            fprintf('Results cleared.\n');
-        end
-
-        function reset(obj)
-            % RESET Clear built state to allow rebuilding with new parameters
-            obj.is_built = false;
-            obj.W_r = [];
-            obj.W_in = [];
-            obj.mu = [];
-            obj.tau = [];
-            obj.A = [];
-            obj.S0 = [];
-            obj.u_interpolant = [];
-            obj.t_ex = [];
-            obj.u_ex = [];
-            obj.cached_params = [];
-            obj.clear_results();
-            fprintf('Model reset.\n');
-        end
     end
 
-    %% Protected Build Sub-Methods (overridable by subclasses)
+    %% Protected Build Sub-Methods (LNN overrides)
     methods (Access = protected)
         function build_network(obj)
-            % BUILD_NETWORK Create W_r via RMTMatrix, initialize W_in, mu, tau, A
+            % BUILD_NETWORK Create W via cRNN, then init W_in, mu, tau, A.
 
-            rng(obj.rng_seed);
+            % Call base class (delegates to connectivity strategy)
+            build_network@cRNN(obj);
 
-            %% Compute RMT defaults
-            % F = 1/sqrt(N*alpha*(2-alpha))
-            if isempty(obj.indegree)
-                obj.indegree = obj.n;  % Fully connected by default
-            end
-            alph = obj.indegree / obj.n;
-            F = 1 / sqrt(obj.n * alph * (2 - alph));
-
-            if isempty(obj.mu_E_tilde),    obj.mu_E_tilde = 3*F;     end
-            if isempty(obj.mu_I_tilde),    obj.mu_I_tilde = -4*F;    end
-            if isempty(obj.sigma_E_tilde), obj.sigma_E_tilde = F;    end
-            if isempty(obj.sigma_I_tilde), obj.sigma_I_tilde = F;    end
-
-            %% Create W_r using RMTMatrix
-            rmt = RMTMatrix(obj.n);
-            rmt.alpha = alph;
-            rmt.f = obj.f;
-            rmt.mu_tilde_e = obj.mu_E_tilde;
-            rmt.mu_tilde_i = obj.mu_I_tilde;
-            rmt.sigma_tilde_e = obj.sigma_E_tilde;
-            rmt.sigma_tilde_i = obj.sigma_I_tilde;
-            rmt.zrs_mode = obj.zrs_mode;
-
-            obj.W_r = obj.level_of_chaos * rmt.W;
-
-            % Report spectral radius
-            W_eigs = eig(obj.W_r);
-            fprintf('W_r created: spectral radius = %.3f, abscissa = %.3f\n', ...
-                max(abs(W_eigs)), max(real(W_eigs)));
-
-            %% Initialize W_in (Gaussian, n x n_in)
+            % Initialize W_in (Gaussian, n × n_in)
             weight_scale = obj.sigma_w / sqrt(obj.n);
             obj.W_in = weight_scale * randn(obj.n, obj.n_in);
 
-            %% Initialize mu (bias vector, n x 1)
+            % Initialize mu (bias vector, n × 1)
             obj.mu = obj.sigma_b * randn(obj.n, 1);
 
-            %% Initialize tau (time constant vector, n x 1)
+            % Initialize tau (time constant vector, n × 1)
             obj.tau = abs(obj.tau_init * ones(obj.n, 1) + 0.1 * randn(obj.n, 1));
             obj.tau = max(obj.tau, 1e-4);  % Ensure positive
 
-            %% Initialize A (reversal potential / bias target, n x 1)
+            % Initialize A (reversal potential, n × 1)
             obj.A = obj.A_init * ones(obj.n, 1) + obj.sigma_w * randn(obj.n, 1) / sqrt(obj.n);
 
-            fprintf('Network initialized: n=%d, n_in=%d, activation=%s\n', obj.n, obj.n_in, obj.activation);
-        end
-
-        function build_stimulus(obj)
-            % BUILD_STIMULUS Generate input, interpolant, and initial state
-            %
-            % If input_func is provided, uses it. Otherwise generates
-            % a default sinusoidal circular trajectory.
-
-            dt = 1 / obj.fs;
-            obj.t_ex = (obj.T_range(1):dt:obj.T_range(2))';
-
-            if ~isempty(obj.input_func)
-                % Use custom input function
-                nt = length(obj.t_ex);
-                obj.u_ex = zeros(obj.n_in, nt);
-                for k = 1:nt
-                    obj.u_ex(:, k) = obj.input_func(obj.t_ex(k));
-                end
-            elseif isempty(obj.u_ex)
-                % Default: sinusoidal circular trajectory
-                T_dur = obj.T_range(2) - obj.T_range(1);
-                freq = 1.0;  % 1 Hz
-                if obj.n_in >= 2
-                    obj.u_ex = zeros(obj.n_in, length(obj.t_ex));
-                    obj.u_ex(1, :) = sin(2 * pi * freq * obj.t_ex');
-                    obj.u_ex(2, :) = cos(2 * pi * freq * obj.t_ex');
-                    % Remaining inputs are zero
-                elseif obj.n_in == 1
-                    obj.u_ex = sin(2 * pi * freq * obj.t_ex');
-                end
-            end
-
-            % Build interpolant for input
-            % u_ex is (n_in x nt), interpolant needs (nt x n_in)
-            obj.u_interpolant = griddedInterpolant(obj.t_ex, obj.u_ex', 'linear', 'nearest');
-
-            % Initialize state vector (small random perturbation)
-            obj.S0 = 0.01 * randn(obj.n, 1);
-
-            fprintf('Stimulus generated: T=[%.1f, %.1f] s, %d time steps\n', ...
-                obj.T_range(1), obj.T_range(2), length(obj.t_ex));
-        end
-
-        function finalize_build(obj)
-            % FINALIZE_BUILD Validate and cache params
-
-            % Validate
-            if obj.n < 1
-                error('LNN:InvalidParams', 'n must be >= 1.');
-            end
-            if obj.n_in < 1
-                error('LNN:InvalidParams', 'n_in must be >= 1.');
-            end
-            if obj.T_range(2) <= obj.T_range(1)
-                error('LNN:InvalidParams', 'T_range(2) must be > T_range(1).');
-            end
-            valid_activations = {'tanh', 'sigmoid', 'piecewise_sigmoid', 'relu'};
-            if ~ismember(obj.activation, valid_activations)
-                error('LNN:InvalidParams', 'Unknown activation: %s. Valid: %s', ...
-                    obj.activation, strjoin(valid_activations, ', '));
-            end
-
-            % Cache params struct
-            obj.cached_params = obj.get_params();
-
-            obj.is_built = true;
-            fprintf('Model built successfully. Ready to run.\n');
+            fprintf('Network initialized: n=%d, n_in=%d, activation=%s\n', ...
+                obj.n, obj.n_in, obj.activation_name);
         end
 
         function decimate_and_unpack(obj)
-            % DECIMATE_AND_UNPACK Decimate state and compute derived quantities
+            % DECIMATE_AND_UNPACK Decimate state and compute derived quantities.
 
             deci = obj.plot_deci;
             t_d = obj.t_out(1:deci:end);
-            x_d = obj.x_out(1:deci:end, :);
+            x_d = obj.state_out(1:deci:end, :);
             nt_d = length(t_d);
 
             params = obj.cached_params;
@@ -473,10 +352,10 @@ classdef LNN < handle
             tau_sys_d = zeros(nt_d, params.n);
 
             for k = 1:nt_d
-                I_k = obj.u_interpolant(t_d(k))';  % (n_in x 1)
+                I_k = obj.u_interpolant(t_d(k))';  % (n_in × 1)
                 u_d(k, :) = I_k';
-                z = params.W_r * x_d(k, :)' + params.W_in * I_k + params.mu;
-                f_k = LNN.apply_activation(z, params.activation, params);
+                z = params.W * x_d(k, :)' + params.W_in * I_k + params.mu;
+                f_k = params.activation.apply(z);
                 f_d(k, :) = f_k';
                 tau_sys_d(k, :) = (params.tau ./ (1 + params.tau .* abs(f_k)))';
             end
@@ -489,51 +368,47 @@ classdef LNN < handle
             obj.plot_data.tau_sys = tau_sys_d;
         end
 
-        function [t_out, x_out] = run_fused(obj, params)
-            % RUN_FUSED Run the fused semi-implicit Euler solver
+        function [t_out_fused, x_out_fused] = run_fused(obj, params)
+            % RUN_FUSED Run the fused semi-implicit Euler solver.
 
             dt = 1 / obj.fs;
             sub_dt = dt / obj.fused_substeps;
             nt = length(obj.t_ex);
 
-            x_out = zeros(nt, obj.n);
-            x_out(1, :) = obj.S0';
+            x_out_fused = zeros(nt, obj.n);
+            x_out_fused(1, :) = obj.S0';
             x_curr = obj.S0;
 
             params.u_interpolant = obj.u_interpolant;
 
             for k = 1:(nt - 1)
-                I_k = obj.u_interpolant(obj.t_ex(k))';  % (n_in x 1)
+                I_k = obj.u_interpolant(obj.t_ex(k))';  % (n_in × 1)
                 for s = 1:obj.fused_substeps
                     x_curr = LNN.fused_step(x_curr, I_k, sub_dt, params);
                 end
-                x_out(k + 1, :) = x_curr';
+                x_out_fused(k + 1, :) = x_curr';
             end
 
-            t_out = obj.t_ex;
+            t_out_fused = obj.t_ex;
         end
     end
 
     %% ====================================================================
     %              STATIC ODE RHS AND FUSED SOLVER
     % =====================================================================
-
     methods (Static)
         function dxdt = dynamics_ltc(t, x, params)
             % DYNAMICS_LTC ODE right-hand side for the LTC network.
             %
             % Implements: dx/dt = -(1./tau + abs(f)) .* x + f .* A
-            % where f = activation(W_r * x + W_in * I(t) + mu)
-            %
-            % Following Hasani's ltc_def.m convention: abs(f) in decay,
-            % signed f in drive.
+            % where f = activation(W * x + W_in * I(t) + mu)
 
             % Get input at time t via interpolant
-            I_t = params.u_interpolant(t)';  % (n_in x 1)
+            I_t = params.u_interpolant(t)';  % (n_in × 1)
 
             % Compute nonlinearity
-            z = params.W_r * x + params.W_in * I_t + params.mu;
-            f_val = LNN.apply_activation(z, params.activation, params);
+            z = params.W * x + params.W_in * I_t + params.mu;
+            f_val = params.activation.apply(z);
 
             % LTC dynamics
             f_abs = abs(f_val);
@@ -545,111 +420,20 @@ classdef LNN < handle
             %
             % From Hasani 2021 Eq. 3:
             %   x(t+dt) = (x(t) + dt * f .* A) / (1 + dt * (1/tau + abs(f)))
-            %
-            % abs(f) in denominator (decay), signed f in numerator (drive).
 
-            z = params.W_r * x + params.W_in * I + params.mu;
-            f_val = LNN.apply_activation(z, params.activation, params);
+            z = params.W * x + params.W_in * I + params.mu;
+            f_val = params.activation.apply(z);
             f_abs = abs(f_val);
             x_new = (x + dt * f_val .* params.A) ./ (1 + dt * (1 ./ params.tau + f_abs));
         end
     end
 
     %% ====================================================================
-    %              INTERNALIZED ACTIVATION FUNCTIONS
+    %              STATIC HELPERS
     % =====================================================================
-
-    methods (Static)
-        function y = apply_activation(z, activation_name, params)
-            % APPLY_ACTIVATION Dispatch to the appropriate activation function.
-
-            switch activation_name
-                case 'tanh'
-                    y = LNN.tanhActivation(z);
-                case 'sigmoid'
-                    y = LNN.logisticSigmoid(z);
-                case 'piecewise_sigmoid'
-                    y = LNN.piecewiseSigmoid(z, params.S_a, params.S_c);
-                case 'relu'
-                    y = LNN.reluActivation(z);
-                otherwise
-                    error('LNN:UnknownActivation', 'Unknown activation: %s', activation_name);
-            end
-        end
-
-        function y = tanhActivation(x)
-            % TANHACTIVATION Hyperbolic tangent activation function.
-            y = tanh(x);
-        end
-
-        function y = logisticSigmoid(x)
-            % LOGISTICSIGMOID Standard logistic sigmoid: 1/(1+exp(-x)).
-            y = 1 ./ (1 + exp(-x));
-        end
-
-        function y = reluActivation(x)
-            % RELUACTIVATION Rectified linear unit: max(0, x).
-            y = max(0, x);
-        end
-
-        function y = piecewiseSigmoid(x, a, c)
-            % PIECEWISESIGMOID Hard sigmoid with rounded (quadratic) corners.
-            %
-            % Identical to SRNNModel2.piecewiseSigmoid. A piecewise
-            % linear/quadratic sigmoid bounded in [0, 1].
-            %
-            % Parameters:
-            %   x - input values
-            %   a - linear fraction parameter (0 to 1)
-            %   c - center/shift parameter
-
-            if a < 0 || a > 1
-                error('Parameter "a" must be between 0 and 1.');
-            end
-            a = a / 2;
-
-            if a == 0.5
-                y_linear = (x - c) + 0.5;
-                y = min(max(y_linear, 0), 1);
-            else
-                y = zeros(size(x));
-                k = 0.5 / (1 - 2*a);
-                x1 = c + a - 1;
-                x2 = c - a;
-                x3 = c + a;
-                x4 = c + 1 - a;
-
-                mask_left_quad = (x >= x1) & (x < x2);
-                mask_linear = (x >= x2) & (x <= x3);
-                mask_right_quad = (x > x3) & (x <= x4);
-                mask_right_sat = (x > x4);
-
-                if any(mask_left_quad, 'all')
-                    y(mask_left_quad) = k * (x(mask_left_quad) - x1).^2;
-                end
-                if any(mask_linear, 'all')
-                    y(mask_linear) = (x(mask_linear) - c) + 0.5;
-                end
-                if any(mask_right_quad, 'all')
-                    y(mask_right_quad) = 1 - k * (x(mask_right_quad) - x4).^2;
-                end
-                if any(mask_right_sat, 'all')
-                    y(mask_right_sat) = 1;
-                end
-            end
-        end
-    end
-
-    %% ====================================================================
-    %              INTERNALIZED PLOTTING HELPERS
-    % =====================================================================
-
     methods (Static, Access = protected)
         function cmap = default_colormap(n_neurons)
             % DEFAULT_COLORMAP Generate a colormap for neuron traces.
-            %
-            % Uses hsv-based colormap for visual distinction.
-
             if n_neurons <= 8
                 cmap = lines(n_neurons);
             else
@@ -657,6 +441,27 @@ classdef LNN < handle
                 sats = 0.7 * ones(n_neurons, 1);
                 vals = 0.8 * ones(n_neurons, 1);
                 cmap = hsv2rgb([hues, sats, vals]);
+            end
+        end
+    end
+
+    %% ====================================================================
+    %              STATIC FACTORY METHODS
+    % =====================================================================
+    methods (Static)
+        function act = make_activation(name)
+            % MAKE_ACTIVATION Create an Activation strategy from a string name.
+            switch lower(name)
+                case 'tanh'
+                    act = TanhActivation();
+                case 'sigmoid'
+                    act = SigmoidActivation();
+                case 'piecewise_sigmoid'
+                    act = PiecewiseSigmoid();
+                case 'relu'
+                    act = ReLUActivation();
+                otherwise
+                    error('LNN:UnknownActivation', 'Unknown activation: %s', name);
             end
         end
     end
