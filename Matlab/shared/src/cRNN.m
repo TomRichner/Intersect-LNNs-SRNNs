@@ -189,6 +189,44 @@ classdef (Abstract) cRNN < handle
     end
 
     %% ====================================================================
+    %              NAME-VALUE PAIR PARSING
+    % =====================================================================
+    methods (Access = protected)
+        function parse_name_value_pairs(obj, args)
+            % PARSE_NAME_VALUE_PAIRS Generic name-value parser with strategy forwarding.
+            %
+            % Checks in order:
+            %   1. Model property (obj itself)
+            %   2. Connectivity strategy property
+            %   3. Stimulus strategy property
+            %   4. Activation strategy property
+            %   5. Warning if not found
+            %
+            % Subclasses should handle special-case params (e.g., activation_name,
+            % n_in) BEFORE calling this method.
+
+            for i = 1:2:length(args)
+                prop = args{i};
+                val = args{i+1};
+
+                if isprop(obj, prop)
+                    obj.(prop) = val;
+                elseif ~isempty(obj.connectivity) && isprop(obj.connectivity, prop)
+                    obj.connectivity.(prop) = val;
+                elseif ~isempty(obj.stimulus) && isprop(obj.stimulus, prop)
+                    obj.stimulus.(prop) = val;
+                elseif ~isempty(obj.activation) && isprop(obj.activation, prop)
+                    obj.activation.(prop) = val;
+                else
+                    warning('cRNN:UnknownProperty', ...
+                        'Unknown property: ''%s'' (not on %s or its strategies)', ...
+                        prop, class(obj));
+                end
+            end
+        end
+    end
+
+    %% ====================================================================
     %              PUBLIC LIFECYCLE METHODS
     % =====================================================================
     methods

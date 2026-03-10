@@ -73,41 +73,32 @@ classdef LNN < cRNN
             % Set default connectivity strategy
             obj.connectivity = RMTConnectivity();
 
-            % Parse name-value pairs
+            % Parse name-value pairs: two passes.
+            % Pass 1: Handle LNN-specific special cases that need side effects
+            %         (e.g., rebuilding strategies from legacy names).
+            % Pass 2: Delegate remaining args to cRNN.parse_name_value_pairs
+            %         which auto-forwards to connectivity/stimulus/activation.
+
+            remaining = {};
             for i = 1:2:length(varargin)
                 prop = varargin{i};
                 val = varargin{i+1};
 
                 if strcmp(prop, 'n_in')
-                    % Also update stimulus
                     obj.n_in = val;
                     obj.stimulus = SinusoidalStimulus('n_in', val);
                 elseif strcmp(prop, 'activation_name')
                     obj.activation_name = val;
                     obj.activation = LNN.make_activation(val);
                 elseif strcmp(prop, 'input_func')
-                    % Pass to stimulus strategy
                     obj.stimulus = SinusoidalStimulus('n_in', obj.n_in, 'input_func', val);
-                elseif strcmp(prop, 'level_of_chaos')
-                    obj.connectivity.level_of_chaos = val;
-                elseif strcmp(prop, 'mu_E_tilde')
-                    obj.connectivity.mu_E_tilde = val;
-                elseif strcmp(prop, 'mu_I_tilde')
-                    obj.connectivity.mu_I_tilde = val;
-                elseif strcmp(prop, 'sigma_E_tilde')
-                    obj.connectivity.sigma_E_tilde = val;
-                elseif strcmp(prop, 'sigma_I_tilde')
-                    obj.connectivity.sigma_I_tilde = val;
-                elseif strcmp(prop, 'zrs_mode')
-                    obj.connectivity.zrs_mode = val;
-                elseif strcmp(prop, 'E_W')
-                    obj.connectivity.E_W = val;
-                elseif isprop(obj, prop)
-                    obj.(prop) = val;
                 else
-                    warning('LNN:UnknownProperty', 'Unknown property: %s', prop);
+                    remaining = [remaining, {prop, val}]; %#ok<AGROW>
                 end
             end
+
+            % Pass 2: generic parsing (model props + strategy forwarding)
+            obj.parse_name_value_pairs(remaining);
         end
     end
 

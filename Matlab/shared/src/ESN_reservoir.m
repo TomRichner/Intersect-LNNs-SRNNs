@@ -229,6 +229,9 @@ classdef ESN_reservoir < handle
                 obj.model.lya_T_interval = [t_all(obj.T_wash + 1), t_all(end)];
                 obj.model.compute_lyapunov();
                 results.lya_results = obj.model.lya_results;
+                if verbose && isfield(results.lya_results, 'LLE')
+                    fprintf('  Largest Lyapunov Exponent: %.4f\n', results.lya_results.LLE);
+                end
             end
 
             obj.mc_results = results;

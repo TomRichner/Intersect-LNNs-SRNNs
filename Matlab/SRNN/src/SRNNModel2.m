@@ -86,14 +86,8 @@ classdef SRNNModel2 < cRNN
             obj.activation_function = @(x) obj.activation.apply(x);
             obj.activation_function_derivative = @(x) obj.activation.derivative(x);
 
-            % Parse name-value pairs
-            for i = 1:2:length(varargin)
-                if isprop(obj, varargin{i})
-                    obj.(varargin{i}) = varargin{i+1};
-                else
-                    warning('SRNNModel:UnknownProperty', 'Unknown property: %s', varargin{i});
-                end
-            end
+            % Parse name-value pairs (delegates to cRNN.parse_name_value_pairs)
+            obj.parse_name_value_pairs(varargin);
         end
     end
 
