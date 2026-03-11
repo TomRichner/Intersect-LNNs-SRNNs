@@ -1,8 +1,8 @@
 # Intersect-LNNs-SRNNs
 
-**Comparing Stable Recurrent Neural Networks (SRNNs) and Liquid Neural Networks (LNNs) as reservoir computing architectures.**
+**Comparing Stable Recurrent Neural Networks (SRNNs) and Liquid Neural Networks (LNNs) as reservoir computing architectures and trainable Neural ODE models.**
 
-This repository explores the intersection of two biologically-inspired recurrent network models — SRNNs with spike-frequency adaptation and short-term synaptic depression, and Liquid Time-Constant (LTC) Networks with input-dependent time constants — comparing their performance as echo state network (ESN) reservoirs and, eventually, as trainable sequence models.
+This repository explores the intersection of two biologically-inspired recurrent network models — SRNNs with spike-frequency adaptation and short-term synaptic depression, and Liquid Time-Constant (LTC) Networks with input-dependent time constants — comparing their performance as echo state network (ESN) reservoirs in MATLAB and as trainable differentiable ODE layers in Julia.
 
 ---
 
@@ -130,7 +130,17 @@ Intersect-LNNs-SRNNs/
 │   ├── LNN_docs/                       # LTC papers, mathematical notes, LFM 2.5 notes
 │   └── cRNN_base_class_refactor.md     # Refactoring notes for SRNN/LNN unification
 │
-├── JuliaLang/                          # (Planned) Julia implementations
+├── JuliaLang/                          # Julia trainable Neural ODE implementations
+│   ├── Project.toml                    # Julia 1.12 + DiffEqFlux/Lux/SciMLSensitivity
+│   ├── src/
+│   │   ├── connectivity.jl             # RMT E/I weight matrix generation
+│   │   ├── activations.jl              # Piecewise sigmoid (AD-safe)
+│   │   └── models/
+│   │       ├── ltc.jl                  # LTC Lux layer (W, W_in, μ, τ, A trainable)
+│   │       └── srnn.jl                 # SRNN Lux layer (SFA + STD, augmented state)
+│   ├── scripts/                        # Training scripts (planned)
+│   └── test/                           # Tests (planned)
+│
 └── README.md
 ```
 
@@ -232,20 +242,29 @@ ps2.load_results(ps.output_dir);
 
 ### 2. Julia Implementation with Differentiable ODE Solvers
 
-Reimplement both architectures in **Julia** using **DiffEqFlux.jl + Lux.jl** to enable gradient-based training via backpropagation through time (BPTT) or interpolated adjoint methods. This opens up direct comparison of *learning dynamics* across architectures.
+🚧 **In Progress.** Both architectures are being reimplemented in **Julia 1.12** using **DiffEqFlux.jl + Lux.jl** to enable gradient-based training via adjoint sensitivity methods. This opens direct comparison of *learning dynamics* across architectures.
 
-**Plan:**
+**Status:**
 
-- Implement three model variants as Neural ODE layers:
-  1. **Hopfield network** (vanilla RNN, no adaptation) — baseline
-  2. **SRNN** (with spike-frequency adaptation) — tests whether biological stabilization mechanisms accelerate learning
-  3. **LNN / LTC** (Liquid Time-Constant) — tests whether input-dependent time constants improve gradient flow
+| Component | Status | Notes |
+|---|---|---|
+| LTC Lux layer (`ltc.jl`) | ✅ Done | W, W_in, μ, τ, A all trainable; Zygote gradients verified |
+| SRNN Lux layer (`srnn.jl`) | ✅ Done | Augmented state (SFA+STD); doubles as Hopfield baseline when n_a=0, n_b=0 |
+| Connectivity (`connectivity.jl`) | ✅ Done | RMT E/I matrix generation; provides W initialization |
+| Activations (`activations.jl`) | ✅ Done | Branchless piecewise sigmoid (AD-safe) |
+| Training pipeline | ⬜ Planned | Optimization.jl + adjoint sensitivity |
+| MATLAB cross-check | ⬜ Planned | Compare Julia and MATLAB dynamics on identical W |
 
-- **Compare learning rates and convergence** on sequence tasks (e.g., sequential MNIST, time series forecasting)
+**Key design decisions:**
+- **Lux.jl (not Flux)** — required for explicit parameter handling in adjoint methods
+- **All parameters trainable** — W, time constants, adaptation scaling, etc. (not frozen ESN-style)
+- **RMT initialization** — structured E/I connectivity as starting point for training
+- **`softplus`-wrapped time constants** — positivity constraint without hard clipping
 
-- **Leverage Julia's LTC ecosystem.** A [reference Pluto notebook](../LTC_julia_reference_files/LTC_MNIST_strips.jl) (from JuliaHub) demonstrates LTC cells trained on sequential MNIST using Flux.jl with a fused semi-implicit Euler solver. This provides a starting point for the LTC implementation, to be adapted to the DiffEqFlux + Lux stack for adjoint sensitivity support.
-
-- **Framework choice:** DiffEqFlux.jl provides `NeuralODE` wrappers with automatic differentiation through ODE solvers; Lux.jl provides a stateless neural network layer API compatible with explicit parameter handling required by adjoint methods.
+**Next steps:**
+- Training scripts with `NeuralODE` + `InterpolatingAdjoint`/`BacksolveAdjoint`
+- Benchmark on sequence tasks (e.g., sequential MNIST)
+- Compare learning rates and convergence across SRNN, LTC, and Hopfield baseline
 
 ---
 
