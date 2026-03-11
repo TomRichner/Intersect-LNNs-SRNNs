@@ -44,11 +44,24 @@ Both models inherit from a common **`cRNN`** abstract base class that provides:
 - **Strategy pattern** for swappable components:
   - **`Connectivity`** (base) / **`RMTConnectivity`** — Random Matrix Theory connectivity with E/I structure and spectral radius control, backed by **`RMTMatrix.m`**
   - **`Stimulus`** (base) / **`StepStimulus`**, **`SinusoidalStimulus`**, **`ESNStimulus`** — input generation strategies
-  - **`Activation`** (base) / **`TanhActivation`**, **`SigmoidActivation`**, **`PiecewiseSigmoid`** — activation function strategies
+  - **`Activation`** (base) / **`TanhActivation`**, **`SigmoidActivation`**, **`PiecewiseSigmoid`**, **`ReLUActivation`** — activation function strategies
 - **`parse_name_value_pairs()`** — generic constructor parsing that auto-forwards unknown params to connectivity/stimulus/activation strategies
 - **`W_in`** input weight matrix — both models use `W_in` explicitly in their dynamics (`dx/dt` includes `W_in * u_raw`)
 
 **Unified ESN:** **`ESN_reservoir`** wraps any `cRNN` subclass via composition for memory capacity measurement (washout → train → test, ridge regression, Lyapunov). Replaces the deprecated `SRNN_ESN_reservoir` and `LNN_ESN_reservoir`.
+
+### Parameter Space Analysis (`ParamSpace`)
+
+**`ParamSpace`** is a model-agnostic class for multi-dimensional grid sweeps over any `cRNN` subclass. It uses a pluggable architecture:
+
+- **`model_factory`** — function handle that creates any cRNN subclass: `@(args) SRNNModel2(args{:})`
+- **`model_args`** — cell array of base name-value pairs passed to the factory
+- **`metric_extractor`** — function handle for extracting metrics from a completed run (LLE, firing rate, etc.)
+- **Grid parameters** — any model/strategy property can be swept (`f`, `level_of_chaos`, `n_a_E`, `n_b_E`, etc.)
+
+Features include batched `parfor` execution, checkpoint/resume capability, randomized execution order, and vector-valued parameter sweeps.
+
+**Implementation:** [`Matlab/shared/src/ParamSpace.m`](Matlab/shared/src/ParamSpace.m)
 
 ---
 
@@ -78,6 +91,7 @@ Intersect-LNNs-SRNNs/
 │   ├── shared/
 │   │   └── src/
 │   │       ├── cRNN.m                  # Abstract base class (build/run/plot lifecycle)
+│   │       ├── ParamSpace.m            # Model-agnostic parameter space analysis
 │   │       ├── ESN_reservoir.m         # Unified ESN wrapper (composition-based)
 │   │       ├── ESNStimulus.m           # ESN scalar input + sparse W_in generation
 │   │       ├── Connectivity.m          # Base connectivity strategy
@@ -89,7 +103,8 @@ Intersect-LNNs-SRNNs/
 │   │       ├── Activation.m            # Base activation strategy
 │   │       ├── TanhActivation.m        # tanh activation
 │   │       ├── SigmoidActivation.m     # sigmoid activation
-│   │       └── PiecewiseSigmoid.m      # Piecewise sigmoid (for SRNN)
+│   │       ├── PiecewiseSigmoid.m      # Piecewise sigmoid (for SRNN)
+│   │       └── ReLUActivation.m        # ReLU activation
 │   │
 │   ├── SRNN/
 │   │   ├── src/
@@ -98,7 +113,8 @@ Intersect-LNNs-SRNNs/
 │   │   └── scripts/
 │   │       ├── setup_paths.m
 │   │       ├── test_SRNN2_defaults.m    # Quick build/run/plot test
-│   │       └── test_ESN_SRNN.m          # ESN memory capacity (Baseline vs SFA vs STD)
+│   │       ├── test_ESN_SRNN.m          # ESN memory capacity (Baseline vs SFA vs STD)
+│   │       └── Fig_2_fraction_excitatory_analysis.m  # f-sweep with adaptation variants
 │   │
 │   └── LNN/
 │       ├── src/
@@ -161,6 +177,36 @@ esn.plot_esn_timeseries([1, 50, 100, 200]);
 esn.model.plot();  % Model-specific internal dynamics
 ```
 
+### ParamSpace (parameter sweeps)
+
+```matlab
+cd Matlab/SRNN/scripts
+setup_paths()
+
+% Create analysis object
+ps = ParamSpace('n_levels', 5, 'note', 'my_sweep');
+ps.model_factory = @(args) SRNNModel2(args{:});
+ps.metric_extractor = @ParamSpace.srnn_metric_extractor;
+
+% Base model configuration
+ps.model_args = {'n', 300, 'indegree', 100, 'T_range', [-15, 45], ...
+    'lya_method', 'benettin'};
+
+% Define grid (everything is an arg — no "conditions")
+ps.add_grid_parameter('f', [0.4, 0.6]);       % fraction excitatory
+ps.add_grid_parameter('n_a_E', [0, 3]);        % SFA on/off
+ps.add_grid_parameter('n_b_E', [0, 1]);        % STD on/off
+ps.add_grid_parameter('reps', 1:3);            % repetitions
+
+ps.run();                                       % batched parfor w/ checkpoints
+ps.plot('metric', 'LLE');                       % histogram
+ps.plot_sensitivity('metric', 'LLE');           % heatmap vs swept param
+
+% Reload results later
+ps2 = ParamSpace();
+ps2.load_results(ps.output_dir);
+```
+
 > **Note:** `setup_paths.m` adds both `<model>/src/` and `shared/src/` to the path.
 
 ---
@@ -169,15 +215,20 @@ esn.model.plot();  % Model-specific internal dynamics
 
 ### 1. Stability Analysis — Parameter Space Sweeps
 
-Compare the stability of SRNN and LNN networks with random connectivity under step-function stimulus perturbations. This will answer: *which architecture is more robust to parameter variation, and how do their stability boundaries differ?*
+~~Compare the stability of SRNN and LNN networks with random connectivity under step-function stimulus perturbations.~~
 
-**Plan:**
+✅ **Done.** The `ParamSpace` class ([`Matlab/shared/src/ParamSpace.m`](Matlab/shared/src/ParamSpace.m)) provides a model-agnostic framework for multi-dimensional grid sweeps over any `cRNN` subclass. Key capabilities:
 
-- **Port the FractionalReservoir analysis framework** into this repository. The [`ParamSpaceAnalysis2`](https://github.com/TomRichner/FractionalReservoir/blob/main/src/ParamSpaceAnalysis2.m) class already supports multi-dimensional grid sweeps, batch execution with random ordering, and Lyapunov exponent computation. The [`Fig_2_fraction_excitatory_analysis.m`](https://github.com/TomRichner/FractionalReservoir/blob/main/scripts/Fig_2_fraction_excitatory_analysis.m) script demonstrates a sweep over the fraction of excitatory neurons (`f`) across adaptation conditions, computing Largest Lyapunov Exponent (LLE) and firing rate distributions.
+- **Pluggable model factory** — works with `SRNNModel2`, `LNN`, or any future `cRNN` subclass
+- **Pluggable metric extraction** — built-in extractors for LLE (`default_metric_extractor`) and SRNN-specific metrics like firing rate and synaptic output (`srnn_metric_extractor`)
+- **Batched `parfor`** execution with checkpoint/resume, randomized order for representative early-stopping
+- **Any model parameter as a grid dimension** — the old "conditions" concept (e.g., no_adapt vs SFA vs STD) is replaced by simply adding those parameters to the grid (e.g., `n_a_E ∈ {0, 3}`, `n_b_E ∈ {0, 1}`)
 
-- **~~Refactor for model-agnostic use.~~** ✅ **Done.** Both models now inherit from `cRNN` with a shared strategy pattern and unified `ESN_reservoir`. Next step: create a **common `ParamSpaceAnalysis` class** that works with either model, sweeping over shared parameters (e.g., `f`, `level_of_chaos`, `n`, `indegree`) and model-specific parameters (e.g., `tau_d`/`c_E` for SRNN, `tau`/`A` for LNN)
+**Example analysis script:** [`Fig_2_fraction_excitatory_analysis.m`](Matlab/SRNN/scripts/Fig_2_fraction_excitatory_analysis.m) — sweeps `f × n_a_E × n_b_E × reps` for SRNN stability analysis.
 
-- **Key metrics to compare:** Largest Lyapunov Exponent (LLE), firing rate distributions, sensitivity to the fraction excitatory (`f`), and response to step-function stimulus changes
+**Next steps:**
+- Run LNN parameter space sweeps (analogous scripts using `@(args) LNN(args{:})`) to compare stability boundaries
+- Build external plotting scripts for cross-model comparison figures
 
 ### 2. Julia Implementation with Differentiable ODE Solvers
 
