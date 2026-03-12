@@ -20,35 +20,29 @@ We introduce a new class of time-continuous recurrent neural network models. Ins
 
 ## 1. Introduction
 
-Recurrent neural networks with continuous-time hidden states determined by ordinary differential equations (ODEs) are effective algorithms for modeling time series data that are ubiquitously used in medical, industrial and business settings. The state of a neural ODE, $x(t) \in \mathbb{R}^D$, is defined by the solution of this equation (Chen et al. 2018):
+Recurrent neural networks with continuous-time hidden states determined by ordinary differential equations (ODEs) are effective algorithms for modeling time series data that are ubiquitously used in medical, industrial and business settings. The state of a neural ODE, $\mathbf{x}(t) \in \mathbb{R}^D$, is defined by the solution of this equation (Chen et al. 2018):
 
-$$\frac{dx(t)}{dt} = f(x(t), I(t), t, \theta)$$
+$$\frac{d\mathbf{x}(t)}{dt} = f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)$$
 
 with a neural network $f$ parametrized by $\theta$. One can then compute the state using a numerical ODE solver, and train the network by performing reverse-mode automatic differentiation (Rumelhart, Hinton, and Williams 1986), either by gradient descent through the solver (Lechner et al. 2019), or by considering the solver as a black-box (Chen et al. 2018; Dupont, Doucet, and Teh 2019; Gholami, Keutzer, and Biros 2019) and apply the adjoint method (Pontryagin 2018). The open questions are: how expressive are neural ODEs in their current formalism, and can we improve their structure to enable better representation learning?
 
 Rather than defining the derivatives of the hidden-state directly by a neural network $f$, one can determine a more stable continuous-time recurrent neural network (CT-RNN) by the following equation (Funahashi and Nakamura 1993):
 
-$$\frac{dx(t)}{dt} = -\frac{x(t)}{\tau} + f(x(t), I(t), t, \theta)$$
+$$\frac{d\mathbf{x}(t)}{dt} = -\frac{\mathbf{x}(t)}{\tau} + f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)$$
 
-in which the term $-x(t)/\tau$ assists the autonomous system to reach an equilibrium state with a time-constant $\tau$. $x(t)$ is the hidden state, $I(t)$ is the input, $t$ represents time, and $f$ is parametrized by $\theta$.
+in which the term $-\mathbf{x}(t)/\tau$ assists the autonomous system to reach an equilibrium state with a time-constant $\tau$. $\mathbf{x}(t)$ is the hidden state, $\mathbf{I}(t)$ is the input, $t$ represents time, and $f$ is parametrized by $\theta$.
 
 ### The LTC Formulation
 
-We propose an alternative formulation: let the hidden state flow of a network be declared by a system of linear ODEs of the form $dx(t)/dt = -x(t)/\tau + S(t)$, and let $S(t) \in \mathbb{R}^M$ represent the following nonlinearity determined by:
+We propose an alternative formulation: let the hidden state flow of a network be declared by a system of linear ODEs of the form $d\mathbf{x}(t)/dt = -\mathbf{x}(t)/\tau + \mathbf{S}(t)$, and let $\mathbf{S}(t) \in \mathbb{R}^M$ represent the following nonlinearity determined by $\mathbf{S}(t) = f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)(A - \mathbf{x}(t))$, with parameters $\theta$ and $A$. Then, by plugging in $\mathbf{S}$ into the hidden states equation, we get:
 
-$$S(t) = f(x(t), I(t), t, \theta) \cdot (A - x(t))$$
-
-with parameters $\theta$ and $A$. Then, by plugging in $S$ into the hidden states equation, we get:
-
-$$\boxed{\frac{dx(t)}{dt} = -\left[\frac{1}{\tau} + f(x(t), I(t), t, \theta)\right] x(t) + f(x(t), I(t), t, \theta) \cdot A} \tag{1}$$
+$$\boxed{\frac{d\mathbf{x}(t)}{dt} = -\left[\frac{1}{\tau} + f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)\right] \mathbf{x}(t) + f(\mathbf{x}(t), \mathbf{I}(t), t, \theta) A} \tag{1}$$
 
 Eq. 1 manifests a novel time-continuous RNN instance with several features and benefits:
 
 ### Liquid Time-Constant
 
-A neural network $f$ not only determines the derivative of the hidden state $x(t)$, but also serves as an input-dependent varying time-constant:
-
-$$\tau_{\text{sys}} = \frac{\tau}{1 + \tau \cdot f(x(t), I(t), t, \theta)}$$
+A neural network $f$ not only determines the derivative of the hidden state $\mathbf{x}(t)$, but also serves as an input-dependent varying time-constant ($\tau_{sys} = \frac{\tau}{1 + \tau f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)}$)
 
 for the learning system. (Time constant is a parameter characterizing the speed and the coupling sensitivity of an ODE.) This property enables single elements of the hidden state to identify specialized dynamical systems for input features arriving at each time-point. We refer to these models as **liquid time-constant networks (LTCs)**. LTCs can be implemented by an arbitrary choice of ODE solvers. In Section 2, we introduce a practical fixed-step ODE solver that simultaneously enjoys the stability of the implicit Euler and the efficiency of the explicit Euler methods.
 
@@ -74,17 +68,17 @@ There are two primary justifications for the choice of this particular represent
 
 **I) Biological motivation.** The LTC model is loosely related to the computational models of neural dynamics in small species, put together with synaptic transmission mechanisms (Sarma et al. 2018; Gleeson et al. 2018; Hasani et al. 2020). The dynamics of non-spiking neurons' potential, $v(t)$, can be written as a system of linear ODEs of the form (Lapicque 1907; Koch and Segev 1998):
 
-$$\frac{dv}{dt} = -g_l v(t) + S(t)$$
+$$\frac{d\mathbf{v}}{dt} = -g_l \mathbf{v}(t) + \mathbf{S}(t)$$
 
-where $S$ is the sum of all synaptic inputs to the cell from presynaptic sources, and $g_l$ is a leakage conductance. All synaptic currents to the cell can be approximated in steady-state by the following nonlinearity (Koch and Segev 1998; Wicks, Roehrig, and Rankin 1996):
+where $\mathbf{S}$ is the sum of all synaptic inputs to the cell from presynaptic sources, and $g_l$ is a leakage conductance. All synaptic currents to the cell can be approximated in steady-state by the following nonlinearity (Koch and Segev 1998; Wicks, Roehrig, and Rankin 1996):
 
-$$S(t) = f(v(t), I(t)) \cdot (A - v(t))$$
+$$\mathbf{S}(t) = f(\mathbf{v}(t), \mathbf{I}(t)) \cdot (A - \mathbf{v}(t))$$
 
-where $f(\cdot)$ is a sigmoidal nonlinearity depending on the state of all neurons $v(t)$ which are presynaptic to the current cell, and external inputs to the cell $I(t)$. By plugging in these two equations, we obtain an equation similar to Eq. 1. LTCs are inspired by this foundation.
+where $f(\cdot)$ is a sigmoidal nonlinearity depending on the state of all neurons $\mathbf{v}(t)$ which are presynaptic to the current cell, and external inputs to the cell $I(t)$. By plugging in these two equations, we obtain an equation similar to Eq. 1. LTCs are inspired by this foundation.
 
-**II) Connection to Dynamic Causal Models.** Eq. 1 might resemble that of the famous Dynamic Causal Models (DCMs) (Friston, Harrison, and Penny 2003) with a Bilinear dynamical system approximation (Penny, Ghahramani, and Friston 2005). DCMs are formulated by taking a second-order approximation (Bilinear) of the dynamical system $dx/dt = F(x(t), I(t), \theta)$, that would result in the following format (Friston, Harrison, and Penny 2003):
+**II) Connection to Dynamic Causal Models.** Eq. 1 might resemble that of the famous Dynamic Causal Models (DCMs) (Friston, Harrison, and Penny 2003) with a Bilinear dynamical system approximation (Penny, Ghahramani, and Friston 2005). DCMs are formulated by taking a second-order approximation (Bilinear) of the dynamical system $d\mathbf{x}/dt = F(\mathbf{x}(t), \mathbf{I}(t), \theta)$, that would result in the following format (Friston, Harrison, and Penny 2003):
 
-$$\frac{dx}{dt} = (A + I(t)B)x(t) + CI(t) \quad \text{with} \quad A = \frac{dF}{dx},\; B = \frac{d^2 F}{dx\, dI(t)},\; C = \frac{dF}{dI(t)}$$
+$$\frac{d\mathbf{x}}{dt} = (A + \mathbf{I}(t)B)\mathbf{x}(t) + C\mathbf{I}(t) \quad \text{with} \quad A = \frac{dF}{d\mathbf{x}},\; B = \frac{d^2 F}{d\mathbf{x}\, d\mathbf{I}(t)},\; C = \frac{dF}{d\mathbf{I}(t)}$$
 
 DCM and bilinear dynamical systems have shown promise in learning to capture complex fMRI time-series signals. LTCs are introduced as variants of continuous-time (CT) models that show great expressivity, stability, and performance in modeling time series.
 
@@ -96,11 +90,11 @@ Solving Eq. 1 analytically is non-trivial due to the nonlinearity of the LTC sem
 
 LTCs' ODE realizes a system of stiff equations (Press et al. 2007). This type of ODE requires an exponential number of discretization steps when simulated with a Runge-Kutta (RK) based integrator. Consequently, ODE solvers based on RK, such as Dormand–Prince (default in torchdiffeq (Chen et al. 2018)), are not suitable for LTCs. Therefore, we design a new ODE solver that fuses the explicit and implicit Euler methods. Our discretization method results in greater stability, and numerically unrolls a given dynamical system of the form $dx/dt = f(x)$ by:
 
-$$x(t_{i+1}) = x(t_i) + \Delta t \cdot f(x(t_i), x(t_{i+1})) \tag{2}$$
+$$x(t_{i+1}) = x(t_i) + \Delta t f(x(t_i), x(t_{i+1})). \tag{2}$$
 
-In particular, we replace only the $x(t_i)$ that occur **linearly** in $f$ by $x(t_{i+1})$. As a result, Eq. 2 can be solved for $x(t_{i+1})$ symbolically. Applying the Fused solver to the LTC representation, and solving it for $x(t + \Delta t)$, we get:
+In particular, we replace only the $x(t_i)$ that occur **linearly** in $f$ by $x(t_{i+1})$. As a result, Eq. 2 can be solved for $x(t_{i+1})$ symbolically. Applying the Fused solver to the LTC representation, and solving it for $\mathbf{x}(t + \Delta t)$, we get:
 
-$$\boxed{x(t + \Delta t) = \frac{x(t) + \Delta t \cdot f(x(t), I(t), t, \theta) \cdot A}{1 + \Delta t \left(1/\tau + f(x(t), I(t), t, \theta)\right)}} \tag{3}$$
+$$\boxed{\mathbf{x}(t + \Delta t) = \frac{\mathbf{x}(t) + \Delta t\, f(\mathbf{x}(t), \mathbf{I}(t), t, \theta) A}{1 + \Delta t \bigl(1/\tau + f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)\bigr)}} \tag{3}$$
 
 Eq. 3 computes one update state for an LTC network. $f$ is assumed to have an arbitrary activation function (e.g., for a tanh nonlinearity $f = \tanh(\gamma_r x + \gamma I + \mu)$). The computational complexity of the algorithm for an input sequence of length $T$ is $O(L \times T)$, where $L$ is the number of discretization steps. Intuitively, a dense version of an LTC network with $N$ neurons, and a dense version of a long short-term memory (LSTM) (Hochreiter and Schmidhuber 1997) network with $N$ cells, would be of the same complexity.
 
@@ -108,22 +102,27 @@ Eq. 3 computes one update state for an LTC network. $f$ is assumed to have an ar
 
 **Parameters:** $\theta = \{\tau^{(N \times 1)} = \text{time-constant},\; \gamma^{(M \times N)} = \text{weights},\; \gamma_r^{(N \times N)} = \text{recurrent weights},\; \mu^{(N \times 1)} = \text{biases}\}$, $A^{(N \times 1)} = \text{bias vector}$, $L = \text{Number of unfolding steps}$, $\Delta t = \text{step size}$, $N = \text{Number of neurons}$
 
-**Inputs:** $M$-dimensional Input $I(t)$ of length $T$, $x(0)$
+**Inputs:** $M$-dimensional Input $\mathbf{I}(t)$ of length $T$, $\mathbf{x}(0)$
 
-**Output:** Next LTC neural state $x_{t+\Delta t}$
+**Output:** Next LTC neural state $\mathbf{x}_{t+\Delta t}$
 
-```
-Function FusedStep(x(t), I(t), Δt, θ):
-    x(t + Δt) = [x(t) + Δt · f(x(t), I(t), t, θ) ⊙ A] / [1 + Δt · (1/τ + f(x(t), I(t), t, θ))]
-    ▷ f(·), and all divisions are applied element-wise.
-    ▷ ⊙ is the Hadamard product.
-
-x_{t+Δt} = x(t)
-for i = 1 ... L do
-    x_{t+Δt} = FusedStep(x(t), I(t), Δt, θ)
-end for
-return x_{t+Δt}
-```
+> **Function** $\texttt{FusedStep}(\mathbf{x}(t),\, \mathbf{I}(t),\, \Delta t,\, \theta)$:
+>
+> $$\mathbf{x}(t + \Delta t)^{(N \times T)} = \frac{\mathbf{x}(t) + \Delta t\, f(\mathbf{x}(t), \mathbf{I}(t), t, \theta) \odot A}{1 + \Delta t \bigl(1/\tau + f(\mathbf{x}(t), \mathbf{I}(t), t, \theta)\bigr)}$$
+>
+> $\triangleright$ $f(\cdot)$, and all divisions are applied element-wise. $\odot$ is the Hadamard product.
+>
+> **end Function**
+>
+> $\mathbf{x}_{t+\Delta t} = \mathbf{x}(t)$
+>
+> **for** $i = 1 \ldots L$ **do**
+>
+> $\qquad \mathbf{x}_{t+\Delta t} = \texttt{FusedStep}(\mathbf{x}(t),\, \mathbf{I}(t),\, \Delta t,\, \theta)$
+>
+> **end for**
+>
+> **return** $\mathbf{x}_{t+\Delta t}$
 
 ---
 
@@ -139,20 +138,29 @@ On the contrary, direct backpropagation through time (BPTT) trades memory for ac
 
 **Parameter:** Loss function $\mathcal{L}(\theta)$, initial parameters $\theta_0$, learning rate $\alpha$, Output weights $w = W_{\text{out}}$, bias $= b_{\text{out}}$
 
-```
-for i = 1 ... number of training steps do
-    (I_b, y_b) = Sample training batch
-    x := x_{t_0} ~ p(x_{t_0})
-    for j = 1 ... T do
-        x = f(I(t), x)
-        ŷ(t) = W_out · x + b_out
-    end for
-    L_total = Σ_{j=1}^{T} L(y_j(t), ŷ_j(t))
-    ∇L(θ) = ∂L_total / ∂θ
-    θ = θ - α · ∇L(θ)
-end for
-return θ
-```
+> **for** $i = 1 \ldots$ number of training steps **do**
+>
+> $\qquad (I_b, y_b) = \text{Sample training batch}$
+>
+> $\qquad x := x_{t_0} \sim p(x_{t_0})$
+>
+> $\qquad$ **for** $j = 1 \ldots T$ **do**
+>
+> $\qquad\qquad x = f(I(t), x)$
+>
+> $\qquad\qquad \hat{y}(t) = W_{\text{out}} \cdot x + b_{\text{out}}$
+>
+> $\qquad$ **end for**
+>
+> $\qquad \mathcal{L}_{\text{total}} = \sum_{j=1}^{T} \mathcal{L}(y_j(t),\, \hat{y}_j(t))$
+>
+> $\qquad \nabla\mathcal{L}(\theta) = \frac{\partial \mathcal{L}_{\text{total}}}{\partial \theta}$
+>
+> $\qquad \theta = \theta - \alpha \cdot \nabla\mathcal{L}(\theta)$
+>
+> **end for**
+>
+> **return** $\theta$
 
 ### Complexity
 
@@ -237,11 +245,11 @@ Let $dx/dt = f_{n,k}(x(t), I(t), \theta)$ with $\theta = \{W, b\}$ represent a N
 
 **Neural ODE:**
 
-$$\mathbb{E}\left[l(z^{(d)}(t))\right] \geq O\left(\left(\sigma_w \sqrt{k} \sqrt{\sigma_w^2 + \sigma_b^2} + k\sqrt{\sigma_w^2 + \sigma_b^2}\right)^{d \times L}\right) \cdot l(I(t)) \tag{7}$$
+$$\mathbb{E}\left[l(z^{(d)}(t))\right] \geq O\left(\frac{\sigma_w \sqrt{k}}{\sqrt{\sigma_w^2 + \sigma_b^2} + k\sqrt{\sigma_w^2 + \sigma_b^2}}\right)^{d \times L} l(I(t)), \tag{7}$$
 
 **CT-RNN:**
 
-$$\mathbb{E}\left[l(z^{(d)}(t))\right] \geq O\left(\left((\sigma_w - \sigma_b) \sqrt{k} \sqrt{\sigma_w^2 + \sigma_b^2} + k\sqrt{\sigma_w^2 + \sigma_b^2}\right)^{d \times L}\right) \cdot l(I(t)) \tag{8}$$
+$$\mathbb{E}\left[l(z^{(d)}(t))\right] \geq O\left(\frac{(\sigma_w - \sigma_b) \sqrt{k}}{\sqrt{\sigma_w^2 + \sigma_b^2} + k\sqrt{\sigma_w^2 + \sigma_b^2}}\right)^{d \times L} l(I(t)). \tag{8}$$
 
 The proof follows similar steps as (Raghu et al. 2017) on the trajectory length bounds established for deep networks with piecewise linear activations, with careful considerations due to the continuous-time setup. The proof is constructed such that we formulate a recurrence between the norm of the hidden state gradient in layer $d+1$, $\|dz/dt^{(d+1)}\|$, in principal components domain, and the expectation of the norm of the right-hand-side of the differential equations of neural ODEs and CT-RNNs. We then roll back the recurrence to reach the inputs.
 
@@ -249,7 +257,7 @@ The proof follows similar steps as (Raghu et al. 2017) on the trajectory length 
 
 Let Eq. 1 determine an LTC with $\theta = \{W, b, \tau, A\}$. With the same conditions on $f$ and $I(t)$ as in Theorem 4, we have:
 
-$$\mathbb{E}\left[l(z^{(d)}(t))\right] \geq O\left(\left(\sigma_w \sqrt{k} \sqrt{\sigma_w^2 + \sigma_b^2} + k\sqrt{\sigma_w^2 + \sigma_b^2}\right)^{d \times L} \times \left(\sigma_w + \frac{\|z^{(d)}\|}{\min(\delta t, L)}\right)\right) \cdot l(I(t)) \tag{9}$$
+$$\mathbb{E}\left[l(z^{(d)}(t))\right] \geq O\!\left(\left(\frac{\sigma_w \sqrt{k}}{\sqrt{\sigma_w^2 + \sigma_b^2} + k\sqrt{\sigma_w^2 + \sigma_b^2}}\right)^{d \times L} \!\times\; \left(\sigma_w + \frac{\|z^{(d)}\|}{\min(\delta t, L)}\right)\right) l(I(t)). \tag{9}$$
 
 ### Discussion of The Theoretical Bounds
 
