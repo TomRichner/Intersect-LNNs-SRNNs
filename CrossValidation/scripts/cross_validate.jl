@@ -13,7 +13,10 @@ const REPO_DIR = joinpath(@__DIR__, "..", "..")
 const JULIA_SRC = joinpath(REPO_DIR, "JuliaLang", "src")
 
 include(joinpath(JULIA_SRC, "connectivity.jl"))
+include(joinpath(JULIA_SRC, "activations.jl"))
 include(joinpath(JULIA_SRC, "models", "ltc.jl"))
+include(joinpath(JULIA_SRC, "models", "ltc1.jl"))
+include(joinpath(JULIA_SRC, "models", "ltc2.jl"))
 include(joinpath(JULIA_SRC, "models", "srnn.jl"))
 
 const DATA_DIR = joinpath(@__DIR__, "..", "data")
@@ -284,6 +287,213 @@ function cross_validate_srnn()
 end
 
 # ════════════════════════════════════════════════════════════════════════
+#  LTC2 CROSS-VALIDATION (Hasani MATLAB-faithful)
+# ════════════════════════════════════════════════════════════════════════
+function cross_validate_ltc2()
+    println("\n" * "="^60)
+    println("  LTC2 Cross-Validation (Hasani MATLAB-faithful)")
+    println("="^60)
+
+    mat_file = joinpath(DATA_DIR, "ltc2_cross_val.mat")
+    if !isfile(mat_file)
+        println("  SKIPPED: Missing $mat_file")
+        return nothing, nothing, NaN
+    end
+    d = matread(mat_file)
+
+    n       = Int(d["n"])
+    n_in    = Int(d["n_in"])
+    k       = Int(d["k"])
+    n_layers = Int(d["n_layers"])
+    S0      = Float32.(vec(d["S0"]))
+    t_mat   = Float64.(vec(d["t_out"]))
+    x_mat   = Float64.(d["state_out"])
+    t_ex    = Float64.(vec(d["t_ex"]))
+    u_ex    = Float64.(d["u_ex"])
+    tau     = Float32.(vec(d["tau"]))
+
+    println("  Loaded: n=$n, k=$k, n_layers=$n_layers")
+
+    # Build Lux layer
+    rng = Random.MersenneTwister(1)
+    layer = LTCODE2(k, n_in; n_layers=n_layers)
+    _, st = Lux.setup(rng, layer)
+
+    # Helper: MAT.jl reads MATLAB cell arrays as Vector{Any} (multi-cell) or
+    # Matrix{Any} containing the matrix (single-cell). Extract properly.
+    function _extract_cell(cell_data, idx)
+        if cell_data isa Vector
+            return cell_data[idx]
+        elseif cell_data isa Matrix && eltype(cell_data) == Any
+            # Single-cell: (1×1) Matrix{Any} wrapping the actual matrix
+            return cell_data[idx]
+        else
+            return cell_data  # Already a plain matrix (single layer)
+        end
+    end
+
+    # Reconstruct parameters from MATLAB cell arrays
+    params = Dict{Symbol, Any}()
+    params[:tau] = tau
+    for j in 1:n_layers
+        W_ff_j  = Float32.(_extract_cell(d["W_ff"], j))
+        b_ff_j  = Float32.(vec(_extract_cell(d["b_ff"], j)))
+        E_ff_j  = Float32.(_extract_cell(d["E_ff"], j))
+        W_rec_j = Float32.(_extract_cell(d["W_rec"], j))
+        b_rec_j = Float32.(vec(_extract_cell(d["b_rec"], j)))
+        E_rec_j = Float32.(_extract_cell(d["E_rec"], j))
+
+        params[Symbol("W_ff_$j")]  = W_ff_j
+        params[Symbol("b_ff_$j")]  = b_ff_j
+        params[Symbol("E_ff_$j")]  = E_ff_j
+        params[Symbol("W_rec_$j")] = W_rec_j
+        params[Symbol("b_rec_$j")] = b_rec_j
+        params[Symbol("E_rec_$j")] = E_rec_j
+    end
+    ps = NamedTuple(params)
+
+    # Input interpolant
+    dt_stim = t_ex[2] - t_ex[1]
+    t0_stim = t_ex[1]
+    nt_stim = length(t_ex)
+    function u_interp(t)
+        idx = clamp(round(Int, (t - t0_stim) / dt_stim) + 1, 1, nt_stim)
+        return Float32.(u_ex[:, idx])
+    end
+
+    function ltc2_rhs!(du, x, p, t)
+        st_d = merge(st, (input = u_interp(t),))
+        dxdt, _ = layer(x, p, st_d)
+        du .= dxdt
+        return nothing
+    end
+
+    T_span = (Float64(t_mat[1]), Float64(t_mat[end]))
+    prob = ODEProblem(ltc2_rhs!, S0, T_span, ps)
+    sol = solve(prob, Tsit5(); saveat=t_mat, abstol=1e-8, reltol=1e-8)
+
+    x_julia = reduce(hcat, sol.u)'
+    nt = length(t_mat)
+    l2_error = [norm(Float64.(x_julia[i, :]) .- x_mat[i, :]) for i in 1:nt]
+
+    max_err = maximum(l2_error)
+    mean_err = mean(l2_error)
+    println("  Max L2 error:  $max_err")
+    println("  Mean L2 error: $mean_err")
+
+    n_show = min(5, n)
+    p_overlay = plot(title="LTC2: MATLAB vs Julia (first $n_show neurons)", ylabel="x(t)")
+    for i in 1:n_show
+        plot!(p_overlay, t_mat, x_mat[:, i]; label=(i==1 ? "MATLAB" : false),
+              color=:steelblue, lw=1.5, alpha=0.7)
+        plot!(p_overlay, t_mat, Float64.(x_julia[:, i]); label=(i==1 ? "Julia" : false),
+              color=:firebrick, lw=1.0, ls=:dash, alpha=0.8)
+    end
+    p_err = plot(t_mat, l2_error; title="LTC2: L2 Error", ylabel="L2", xlabel="Time (s)",
+        lw=1.5, color=:black, label=false)
+    hline!(p_err, [mean_err]; ls=:dash, color=:gray, label="mean=$(round(mean_err, sigdigits=3))")
+
+    return p_overlay, p_err, max_err
+end
+
+# ════════════════════════════════════════════════════════════════════════
+#  LTC1 CROSS-VALIDATION (Hasani Python-faithful, fused solver)
+# ════════════════════════════════════════════════════════════════════════
+function cross_validate_ltc1()
+    println("\n" * "="^60)
+    println("  LTC1 Cross-Validation (Hasani Python-faithful)")
+    println("="^60)
+
+    mat_file = joinpath(DATA_DIR, "ltc1_cross_val.mat")
+    if !isfile(mat_file)
+        println("  SKIPPED: Missing $mat_file")
+        return nothing, nothing, NaN
+    end
+    d = matread(mat_file)
+
+    n     = Int(d["n"])
+    n_in  = Int(d["n_in"])
+    S0    = Float32.(vec(d["S0"]))
+    t_mat = Float64.(vec(d["t_out"]))
+    x_mat = Float64.(d["state_out"])
+    t_ex  = Float64.(vec(d["t_ex"]))
+    u_ex  = Float64.(d["u_ex"])
+
+    println("  Loaded: n=$n, n_in=$n_in")
+
+    # Build Lux layer
+    rng = Random.MersenneTwister(1)
+    layer = LTCODE1(n, n_in; solver=:semi_implicit, ode_solver_unfolds=6)
+    _, st = Lux.setup(rng, layer)
+
+    # Reconstruct parameters from MATLAB
+    _inv_sp(y) = y > 20.0 ? Float32(y) : Float32(log(exp(Float64(y)) - 1.0))
+
+    ps = (
+        W_raw           = Float32.(_inv_sp.(d["W_syn"])),
+        mu              = Float32.(d["mu_syn"]),
+        sigma           = Float32.(d["sigma_syn"]),
+        erev            = Float32.(d["erev"]),
+        sensory_W_raw   = Float32.(_inv_sp.(d["sensory_W"])),
+        sensory_mu      = Float32.(d["sensory_mu"]),
+        sensory_sigma   = Float32.(d["sensory_sigma"]),
+        sensory_erev    = Float32.(d["sensory_erev"]),
+        vleak           = Float32.(vec(d["vleak"])),
+        gleak_raw       = Float32.(_inv_sp.(vec(d["gleak"]))),
+        cm_raw          = Float32.(_inv_sp.(vec(d["cm"]))),
+        input_w         = Float32.(vec(d["input_w"])),
+        input_b         = Float32.(vec(d["input_b"])),
+    )
+
+    # Verify round-trips
+    W_check = NNlib.softplus.(ps.W_raw)
+    max_W_err = maximum(abs.(W_check .- Float32.(d["W_syn"])))
+    println("  W round-trip max error: $max_W_err")
+
+    # Input interpolant
+    dt_stim = t_ex[2] - t_ex[1]
+    t0_stim = t_ex[1]
+    nt_stim = length(t_ex)
+    function u_interp(t)
+        idx = clamp(round(Int, (t - t0_stim) / dt_stim) + 1, 1, nt_stim)
+        return Float32.(u_ex[:, idx])
+    end
+
+    # Step through with fused solver (matching MATLAB)
+    nt = length(t_mat)
+    x_julia = zeros(Float32, nt, n)
+    v = copy(S0)
+    x_julia[1, :] .= v
+
+    for k_step in 2:nt
+        u_k = u_interp(t_mat[k_step - 1])
+        st_d = merge(st, (input = u_k,))
+        v, _ = layer(v, ps, st_d)
+        x_julia[k_step, :] .= v
+    end
+
+    l2_error = [norm(Float64.(x_julia[i, :]) .- x_mat[i, :]) for i in 1:nt]
+    max_err = maximum(l2_error)
+    mean_err = mean(l2_error)
+    println("  Max L2 error:  $max_err")
+    println("  Mean L2 error: $mean_err")
+
+    n_show = min(5, n)
+    p_overlay = plot(title="LTC1: MATLAB vs Julia (first $n_show neurons)", ylabel="v(t)")
+    for i in 1:n_show
+        plot!(p_overlay, t_mat, x_mat[:, i]; label=(i==1 ? "MATLAB" : false),
+              color=:steelblue, lw=1.5, alpha=0.7)
+        plot!(p_overlay, t_mat, Float64.(x_julia[:, i]); label=(i==1 ? "Julia" : false),
+              color=:firebrick, lw=1.0, ls=:dash, alpha=0.8)
+    end
+    p_err = plot(t_mat, l2_error; title="LTC1: L2 Error", ylabel="L2", xlabel="Time (s)",
+        lw=1.5, color=:black, label=false)
+    hline!(p_err, [mean_err]; ls=:dash, color=:gray, label="mean=$(round(mean_err, sigdigits=3))")
+
+    return p_overlay, p_err, max_err
+end
+
+# ════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ════════════════════════════════════════════════════════════════════════
 println("Cross-Validation: MATLAB ↔ Julia")
@@ -291,21 +501,32 @@ println("Data directory: $DATA_DIR")
 
 p1, p2, ltc_err = cross_validate_ltc()
 p3, p4, srnn_err = cross_validate_srnn()
+p5, p6, ltc2_err = cross_validate_ltc2()
+p7, p8, ltc1_err = cross_validate_ltc1()
 
 println("\n" * "="^60)
 println("  Summary")
 println("="^60)
-println("  LTC  max L2 error: $ltc_err")
-println("  SRNN max L2 error: $srnn_err")
+println("  LTC  (original) max L2 error: $ltc_err")
+println("  SRNN            max L2 error: $srnn_err")
+println("  LTC2 (MATLAB)   max L2 error: $ltc2_err")
+println("  LTC1 (Python)   max L2 error: $ltc1_err")
 println("="^60)
 
-# Combine all 4 panels into one figure (2×2 grid)
-fig = plot(p1, p3, p2, p4;
-    layout=grid(2, 2), size=(1400, 800),
-    plot_title="MATLAB ↔ Julia Cross-Validation")
+# Build figure: original models on top row, new models on bottom
+all_plots = Any[p1, p3, p2, p4]  # original LTC + SRNN
+if !isnothing(p5)
+    push!(all_plots, p5, p7, p6, p8)
+    fig = plot(all_plots...;
+        layout=grid(4, 2), size=(1400, 1600),
+        plot_title="MATLAB ↔ Julia Cross-Validation (All Models)")
+else
+    fig = plot(all_plots...;
+        layout=grid(2, 2), size=(1400, 800),
+        plot_title="MATLAB ↔ Julia Cross-Validation")
+end
 
 display(fig)
 
 println("\nDone. Press Enter to close.")
 readline()
-

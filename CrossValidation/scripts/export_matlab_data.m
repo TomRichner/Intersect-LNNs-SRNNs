@@ -130,5 +130,90 @@ fprintf('Saved: %s\n', fullfile(data_dir, 'ltc_cross_val.mat'));
 fprintf('  n=%d, n_in=%d, T=[0, 5], %d time steps\n', ...
     p.n, p.n_in, length(lnn.t_out));
 
+%% ════════════════════════════════════════════════════════════════════════
+%  LNN2 EXPORT (Hasani MATLAB-faithful)
+%  ════════════════════════════════════════════════════════════════════════
+fprintf('\n=== LNN2 Export ===\n');
+
+lnn2 = LNN2('n', 20, 'n_in', 2, 'k', 20, ...
+             'T_range', [0, 5], ...
+             'rng_seeds', [42 42], ...
+             'activation_name', 'tanh', ...
+             'lya_method', 'none');
+
+lnn2.build();
+lnn2.run();
+
+p2 = lnn2.get_params();
+
+ltc2_data = struct();
+ltc2_data.n            = p2.n;
+ltc2_data.n_in         = p2.n_in;
+ltc2_data.k            = p2.k;
+ltc2_data.n_layers     = p2.n_layers;
+ltc2_data.activation_name = p2.activation_name;
+ltc2_data.W_ff         = p2.W_ff;
+ltc2_data.b_ff         = p2.b_ff;
+ltc2_data.E_ff         = p2.E_ff;
+ltc2_data.W_rec        = p2.W_rec;
+ltc2_data.b_rec        = p2.b_rec;
+ltc2_data.E_rec        = p2.E_rec;
+ltc2_data.tau          = p2.tau;
+
+ltc2_data.t_out     = lnn2.t_out;
+ltc2_data.state_out = lnn2.state_out;
+ltc2_data.S0        = lnn2.S0;
+ltc2_data.t_ex      = lnn2.stimulus.t_ex;
+ltc2_data.u_ex      = lnn2.stimulus.u_ex;
+
+save(fullfile(data_dir, 'ltc2_cross_val.mat'), '-struct', 'ltc2_data', '-v7');
+fprintf('Saved: %s\n', fullfile(data_dir, 'ltc2_cross_val.mat'));
+fprintf('  n=%d, k=%d, n_layers=%d, T=[0, 5], %d time steps\n', ...
+    p2.n, p2.k, p2.n_layers, length(lnn2.t_out));
+
+%% ════════════════════════════════════════════════════════════════════════
+%  LNN1 EXPORT (Hasani Python-faithful)
+%  ════════════════════════════════════════════════════════════════════════
+fprintf('\n=== LNN1 Export ===\n');
+
+lnn1 = LNN1('n', 20, 'n_in', 2, ...
+             'T_range', [0, 5], ...
+             'rng_seeds', [42 42], ...
+             'lya_method', 'none');
+
+lnn1.build();
+lnn1.run();
+
+p1 = lnn1.get_params();
+
+ltc1_data = struct();
+ltc1_data.n             = p1.n;
+ltc1_data.n_in          = p1.n_in;
+ltc1_data.W_syn         = p1.W_syn;
+ltc1_data.mu_syn        = p1.mu_syn;
+ltc1_data.sigma_syn     = p1.sigma_syn;
+ltc1_data.erev          = p1.erev;
+ltc1_data.sensory_W     = p1.sensory_W;
+ltc1_data.sensory_mu    = p1.sensory_mu;
+ltc1_data.sensory_sigma = p1.sensory_sigma;
+ltc1_data.sensory_erev  = p1.sensory_erev;
+ltc1_data.vleak         = p1.vleak;
+ltc1_data.gleak         = p1.gleak;
+ltc1_data.cm            = p1.cm;
+ltc1_data.input_w       = p1.input_w;
+ltc1_data.input_b       = p1.input_b;
+
+ltc1_data.t_out     = lnn1.t_out;
+ltc1_data.state_out = lnn1.state_out;
+ltc1_data.S0        = lnn1.S0;
+ltc1_data.t_ex      = lnn1.stimulus.t_ex;
+ltc1_data.u_ex      = lnn1.stimulus.u_ex;
+
+save(fullfile(data_dir, 'ltc1_cross_val.mat'), '-struct', 'ltc1_data', '-v7');
+fprintf('Saved: %s\n', fullfile(data_dir, 'ltc1_cross_val.mat'));
+fprintf('  n=%d, n_in=%d, T=[0, 5], %d time steps\n', ...
+    p1.n, p1.n_in, length(lnn1.t_out));
+
 fprintf('\n=== Export complete ===\n');
 fprintf('Files saved to: %s\n', data_dir);
+
