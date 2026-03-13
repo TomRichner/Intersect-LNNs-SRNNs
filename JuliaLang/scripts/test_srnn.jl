@@ -15,14 +15,14 @@ include(joinpath(@__DIR__, "..", "src", "models", "srnn.jl"))
 # ── Configuration ───────────────────────────────────────────────────────
 const N       = 300
 const INDEG   = 100
-const F_FRAC  = 0.8
+const F_FRAC  = 0.5
 const N_E     = round(Int, F_FRAC * N)
 const N_I     = N - N_E
 const N_IN    = N          # W_in = I(n), so input dim = n
 const N_A_E   = 3
 const N_B_E   = 1
 const T_SPAN  = (0.0f0, 50.0f0)
-const DT      = 0.001f0
+const DT      = 0.0025f0   # fs = 400 Hz (matching MATLAB)
 const FS      = 1.0f0 / DT
 
 rng = Random.MersenneTwister(42)

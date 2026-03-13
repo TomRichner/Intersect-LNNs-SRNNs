@@ -227,37 +227,40 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
     # Helper: scalar or per-neuron/per-pop vector
     _s_or_v(val, dim) = pn ? fill(Float32(val), dim) : Float32[Float32(val)]
 
+    # Inverse softplus: log(exp(x) - 1), so that softplus(result) = x
+    _inv_sp(x) = Float32(log(exp(x) - 1))
+
     ps = Dict{Symbol, Any}(
         :W         => σ_w .* randn(rng, Float32, n, n),
         :W_in      => Float32(0.1) .* randn(rng, Float32, n, n_in),
-        :a_0       => _s_or_v(0.4, n),
-        :log_tau_d => _s_or_v(0.0, n),        # softplus(0) ≈ 0.693
+        :a_0       => _s_or_v(0.35, n),               # MATLAB: S_c = 0.35
+        :log_tau_d => _s_or_v(_inv_sp(0.1), n),        # τ_d = 0.1s
     )
 
     # SFA parameters for E neurons
     if layer.n_a_E > 0
-        ps[:log_tau_a_E_lo] = _s_or_v(-0.5, n_E)
-        ps[:log_tau_a_E_hi] = _s_or_v(1.0, n_E)
-        ps[:log_c_E] = _s_or_v(-3.0, n_E)     # softplus(-3) ≈ 0.049
+        ps[:log_tau_a_E_lo] = _s_or_v(_inv_sp(0.25), n_E)  # τ = 0.25s
+        ps[:log_tau_a_E_hi] = _s_or_v(_inv_sp(10.0), n_E)  # τ = 10.0s
+        ps[:log_c_E] = _s_or_v(-3.0, n_E)     # softplus(-3) ≈ 0.049 ≈ MATLAB 0.15/3
     end
 
     # SFA parameters for I neurons
     if layer.n_a_I > 0
-        ps[:log_tau_a_I_lo] = _s_or_v(-0.5, n_I)
-        ps[:log_tau_a_I_hi] = _s_or_v(1.0, n_I)
-        ps[:log_c_I] = _s_or_v(-3.0, n_I)
+        ps[:log_tau_a_I_lo] = _s_or_v(_inv_sp(0.25), n_I)  # τ = 0.25s
+        ps[:log_tau_a_I_hi] = _s_or_v(_inv_sp(10.0), n_I)  # τ = 10.0s
+        ps[:log_c_I] = _s_or_v(-3.0, n_I)     # softplus(-3) ≈ 0.049
     end
 
     # STD parameters for E neurons
     if layer.n_b_E > 0
-        ps[:log_tau_b_E_rec] = _s_or_v(0.0, n_E)    # τ_rec ≈ 0.7s
-        ps[:log_tau_b_E_rel] = _s_or_v(-1.0, n_E)    # τ_rel ≈ 0.3s
+        ps[:log_tau_b_E_rec] = _s_or_v(_inv_sp(1.0), n_E)    # τ_rec = 1.0s
+        ps[:log_tau_b_E_rel] = _s_or_v(_inv_sp(0.25), n_E)   # τ_rel = 0.25s
     end
 
     # STD parameters for I neurons
     if layer.n_b_I > 0
-        ps[:log_tau_b_I_rec] = _s_or_v(0.0, n_I)
-        ps[:log_tau_b_I_rel] = _s_or_v(-1.0, n_I)
+        ps[:log_tau_b_I_rec] = _s_or_v(_inv_sp(1.0), n_I)    # τ_rec = 1.0s
+        ps[:log_tau_b_I_rel] = _s_or_v(_inv_sp(0.25), n_I)   # τ_rel = 0.25s
     end
 
     return NamedTuple(ps)
