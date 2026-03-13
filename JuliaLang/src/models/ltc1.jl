@@ -86,6 +86,17 @@ function _per_synapse_sigmoid(v_pre::AbstractVector, mu, sigma)
     return NNlib.sigmoid.(sigma .* (v .- mu))  # (n, n) or (m, n)
 end
 
+# ── Batched: v_pre is (P, B) → result (P, N, B) ─────────────────────────
+function _per_synapse_sigmoid(v_pre::AbstractMatrix, mu, sigma)
+    # v_pre: (P, B), mu/sigma: (P, N)
+    # reshape for 3D broadcast: v → (P, 1, B), mu/sigma → (P, N, 1)
+    P, B = size(v_pre)
+    v3 = reshape(v_pre, P, 1, B)           # (P, 1, B)
+    mu3 = reshape(mu, size(mu, 1), size(mu, 2), 1)     # (P, N, 1)
+    sig3 = reshape(sigma, size(sigma, 1), size(sigma, 2), 1) # (P, N, 1)
+    return NNlib.sigmoid.(sig3 .* (v3 .- mu3))  # (P, N, B)
+end
+
 function Lux.initialparameters(rng::AbstractRNG, layer::LTCODE1)
     n, n_in = layer.n, layer.n_in
 
@@ -145,6 +156,12 @@ function _map_inputs(inputs::AbstractVector, ps)
     return ps.input_w .* inputs .+ ps.input_b
 end
 
+# Batched: inputs is (M, B)
+function _map_inputs(inputs::AbstractMatrix, ps)
+    # ps.input_w is (M,), broadcasts against (M, B)
+    return ps.input_w .* inputs .+ ps.input_b
+end
+
 # ── Semi-implicit fused solver (one step) ────────────────────────────────
 function _fused_step(v_pre::AbstractVector, inputs_mapped, ps)
     # Constrain parameters
@@ -170,6 +187,43 @@ function _fused_step(v_pre::AbstractVector, inputs_mapped, ps)
     w_den = vec(sum(w_act, dims=1)) .+ w_den_sensory         # (N,)
 
     # Fused update: v ← (cm·v + gleak·vleak + w_num) / (cm + gleak + w_den)
+    numerator = cm .* v_pre .+ gleak .* ps.vleak .+ w_num
+    denominator = cm .+ gleak .+ w_den
+
+    return numerator ./ denominator
+end
+
+# ── Batched semi-implicit fused solver ───────────────────────────────────
+# v_pre: (N, B), inputs_mapped: (M, B)
+# Returns: (N, B)
+function _fused_step(v_pre::AbstractMatrix, inputs_mapped::AbstractMatrix, ps)
+    W = NNlib.softplus.(ps.W_raw)             # (N, N)
+    sensory_W = NNlib.softplus.(ps.sensory_W_raw) # (M, N)
+    gleak = NNlib.softplus.(ps.gleak_raw)     # (N,)
+    cm = NNlib.softplus.(ps.cm_raw)           # (N,)
+
+    # Sensory pathway: gates are (M, N, B)
+    sensory_gate = _per_synapse_sigmoid(inputs_mapped, ps.sensory_mu, ps.sensory_sigma)
+    # sensory_W: (M, N) → (M, N, 1) for broadcast with (M, N, B)
+    sW3 = reshape(sensory_W, size(sensory_W, 1), size(sensory_W, 2), 1)
+    sensory_w_act = sW3 .* sensory_gate                                # (M, N, B)
+    sE3 = reshape(ps.sensory_erev, size(ps.sensory_erev, 1), size(ps.sensory_erev, 2), 1)
+    sensory_rev_act = sensory_w_act .* sE3                             # (M, N, B)
+
+    w_num_sensory = dropdims(sum(sensory_rev_act, dims=1), dims=1)     # (N, B)
+    w_den_sensory = dropdims(sum(sensory_w_act, dims=1), dims=1)       # (N, B)
+
+    # Recurrent pathway: gates are (N, N, B)
+    w_gate = _per_synapse_sigmoid(v_pre, ps.mu, ps.sigma)
+    W3 = reshape(W, size(W, 1), size(W, 2), 1)
+    w_act = W3 .* w_gate                                               # (N, N, B)
+    E3 = reshape(ps.erev, size(ps.erev, 1), size(ps.erev, 2), 1)
+    rev_act = w_act .* E3                                               # (N, N, B)
+
+    w_num = dropdims(sum(rev_act, dims=1), dims=1) .+ w_num_sensory   # (N, B)
+    w_den = dropdims(sum(w_act, dims=1), dims=1) .+ w_den_sensory     # (N, B)
+
+    # Fused update — (N,) params broadcast against (N, B)
     numerator = cm .* v_pre .+ gleak .* ps.vleak .+ w_num
     denominator = cm .+ gleak .+ w_den
 
@@ -202,11 +256,81 @@ function _f_prime(v_pre::AbstractVector, inputs_mapped, ps)
     return f_prime
 end
 
-# ── Main call: dispatches to solver ──────────────────────────────────────
+# ── Batched Explicit Euler ───────────────────────────────────────────────
+# v_pre: (N, B), inputs_mapped: (M, B)
+# Returns: (N, B)
+function _f_prime(v_pre::AbstractMatrix, inputs_mapped::AbstractMatrix, ps)
+    W = NNlib.softplus.(ps.W_raw)
+    sensory_W = NNlib.softplus.(ps.sensory_W_raw)
+    gleak = NNlib.softplus.(ps.gleak_raw)
+    cm = NNlib.softplus.(ps.cm_raw)
+
+    # Sensory: (M, N, B)
+    sensory_gate = _per_synapse_sigmoid(inputs_mapped, ps.sensory_mu, ps.sensory_sigma)
+    sW3 = reshape(sensory_W, size(sensory_W, 1), size(sensory_W, 2), 1)
+    sensory_w_act = sW3 .* sensory_gate
+    w_reduced_sensory = dropdims(sum(sensory_w_act, dims=1), dims=1)    # (N, B)
+    sE3 = reshape(ps.sensory_erev, size(ps.sensory_erev, 1), size(ps.sensory_erev, 2), 1)
+    sensory_in = sE3 .* sensory_w_act                                   # (M, N, B)
+
+    # Recurrent: (N, N, B)
+    w_gate = _per_synapse_sigmoid(v_pre, ps.mu, ps.sigma)
+    W3 = reshape(W, size(W, 1), size(W, 2), 1)
+    w_act = W3 .* w_gate
+    w_reduced_synapse = dropdims(sum(w_act, dims=1), dims=1)            # (N, B)
+    E3 = reshape(ps.erev, size(ps.erev, 1), size(ps.erev, 2), 1)
+    synapse_in = E3 .* w_act                                            # (N, N, B)
+
+    sum_in = dropdims(sum(sensory_in, dims=1), dims=1) .- v_pre .* w_reduced_synapse .+
+             dropdims(sum(synapse_in, dims=1), dims=1) .- v_pre .* w_reduced_sensory
+
+    f_prime = (1.0f0 ./ cm) .* (gleak .* (ps.vleak .- v_pre) .+ sum_in)
+    return f_prime
+end
+
+# ── Main call: dispatches to solver (single sample) ─────────────────────
 function (layer::LTCODE1)(v::AbstractVector, ps, st)
     u = st.input
     if isnothing(u)
         u = zeros(eltype(v), layer.n_in)
+    end
+
+    inputs_mapped = _map_inputs(u, ps)
+
+    if layer.solver === :semi_implicit
+        v_out = v
+        for _ in 1:layer.ode_solver_unfolds
+            v_out = _fused_step(v_out, inputs_mapped, ps)
+        end
+    elseif layer.solver === :explicit
+        v_out = v
+        h = 0.1f0
+        for _ in 1:layer.ode_solver_unfolds
+            v_out = v_out .+ h .* _f_prime(v_out, inputs_mapped, ps)
+        end
+    elseif layer.solver === :runge_kutta
+        v_out = v
+        h = 0.1f0
+        for _ in 1:layer.ode_solver_unfolds
+            k1 = h .* _f_prime(v_out, inputs_mapped, ps)
+            k2 = h .* _f_prime(v_out .+ 0.5f0 .* k1, inputs_mapped, ps)
+            k3 = h .* _f_prime(v_out .+ 0.5f0 .* k2, inputs_mapped, ps)
+            k4 = h .* _f_prime(v_out .+ k3, inputs_mapped, ps)
+            v_out = v_out .+ (1.0f0 / 6.0f0) .* (k1 .+ 2.0f0 .* k2 .+ 2.0f0 .* k3 .+ k4)
+        end
+    else
+        error("Unknown solver: $(layer.solver). Use :semi_implicit, :explicit, or :runge_kutta")
+    end
+
+    return v_out, st
+end
+
+# ── Main call: batched (v is N×B matrix) ─────────────────────────────────
+function (layer::LTCODE1)(v::AbstractMatrix, ps, st)
+    u = st.input   # (M, B) or nothing
+    if isnothing(u)
+        B = size(v, 2)
+        u = zeros(eltype(v), layer.n_in, B)
     end
 
     inputs_mapped = _map_inputs(u, ps)
