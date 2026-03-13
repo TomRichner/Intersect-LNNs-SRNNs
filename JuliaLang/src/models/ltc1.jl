@@ -372,3 +372,11 @@ Returns dv/dt (not next state).
 function ltc1_ode_rhs(v::AbstractVector, ps, inputs_mapped)
     return _f_prime(v, inputs_mapped, ps)
 end
+
+"""
+    readout(::LTCODE1, v, ps) → v
+
+Identity readout for LTCODE1 — the hidden state IS the readout.
+Provides a uniform interface with SRNNCell's readout function.
+"""
+readout(::LTCODE1, v, ps) = v
