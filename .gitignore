@@ -1,3 +1,12 @@
+# Data (downloaded datasets — not committed)
+**/data/
+
+# OS
+.DS_Store
+
+# Julia
+JuliaLang/Manifest.toml
+
 # matlab
 *.mat
 
