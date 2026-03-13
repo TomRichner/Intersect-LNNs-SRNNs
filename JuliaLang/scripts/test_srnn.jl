@@ -128,102 +128,31 @@ save_dt = 0.01f0  # save every 10ms (matching MATLAB plot_deci ~ 10)
 sol = solve(prob, Tsit5(); dt=DT, saveat=save_dt, abstol=1e-6, reltol=1e-6)
 println("  Integration complete: $(length(sol.t)) saved time steps")
 
-# ── Unpack state trajectories ──────────────────────────────────────────
+# ── Unpack and plot using plot_srnn module ─────────────────────────────
+include(joinpath(@__DIR__, "..", "src", "plot_srnn.jl"))
+
 t_sol = sol.t
-S_all = reduce(hcat, sol.u)'   # (nt × state_dim)
+S_all = reduce(hcat, sol.u)   # (state_dim, nt) — columns are state vectors
 nt = length(t_sol)
 
-# Unpack state: S = [a_E(:); a_I(:); b_E(:); b_I(:); x]
-len_a_E = N_E * N_A_E
-len_b_E = N_E * N_B_E
-
-# Extract x (dendritic states)
-x_offset = len_a_E + 0 + len_b_E + 0  # n_a_I=0, n_b_I=0
-X = S_all[:, x_offset+1:x_offset+N]  # (nt × n)
-
-# Extract a_E (adaptation, n_E × n_a_E × nt)
-A_E = reshape(S_all[:, 1:len_a_E]', N_E, N_A_E, nt)
-
-# Extract b_E (STD, n_E × nt)
-B_E = S_all[:, len_a_E+1:len_a_E+len_b_E]'  # (n_E × nt)
-
-# Compute firing rates and synaptic output
-R = zeros(Float32, N, nt)
-BR = zeros(Float32, N, nt)
-
-c_E = NNlib.softplus(ps.log_c_E[1])
-
-for k in 1:nt
-    x_k = X[k, :]
-
-    # Compute x_eff with SFA
-    x_eff = copy(x_k)
-    sum_a_E = vec(sum(A_E[:, :, k], dims=2))  # (n_E,)
-    x_eff[1:N_E] .-= c_E .* sum_a_E
-
-    # Firing rate
-    r_k = layer.activation.(x_eff)
-    R[:, k] .= r_k
-
-    # STD multiplicative factor
-    b_k = ones(Float32, N)
-    b_k[1:N_E] .= B_E[:, k]
-    BR[:, k] .= b_k .* r_k
-end
+# Unpack state trajectory into named components
+data = unpack_trajectory(layer, S_all, ps)
 
 # Compute input at saved times for plotting
-U_plot = zeros(Float32, nt, N)
+n_show = min(20, N_E)
+U_E_plot = zeros(Float32, n_show, nt)
+U_I_plot = zeros(Float32, N_I, nt)
 for k in 1:nt
-    U_plot[k, :] .= u_interp(t_sol[k])
+    u_k = u_interp(t_sol[k])
+    U_E_plot[:, k] .= u_k[1:n_show]
+    U_I_plot[:, k] .= u_k[N_E+1:end]
 end
 
-# ── Plot ───────────────────────────────────────────────────────────────
+# Generate multi-panel figure
 println("Generating multi-panel figure...")
-
-e_color = :steelblue
-i_color = :firebrick
-
-# Panel 1: External input (E neurons only, first 20 for readability)
-n_show = min(20, N_E)
-p1 = plot(t_sol, U_plot[:, 1:n_show];
-    label=false, title="External Input (E neurons, first $n_show)",
-    ylabel="u", lw=0.5, alpha=0.6, color=e_color)
-
-# Panel 2: Dendritic states x(t)
-p2 = plot(t_sol, X[:, 1:N_E];
-    label=false, title="Dendritic States x(t)",
-    ylabel="x", lw=0.3, alpha=0.4, color=e_color)
-plot!(p2, t_sol, X[:, N_E+1:end];
-    label=false, lw=0.3, alpha=0.4, color=i_color)
-
-# Panel 3: Firing rates r(t)
-p3 = plot(t_sol, R[1:N_E, :]';
-    label=false, title="Firing Rates r(t)",
-    ylabel="r", lw=0.3, alpha=0.4, color=e_color)
-plot!(p3, t_sol, R[N_E+1:end, :]';
-    label=false, lw=0.3, alpha=0.4, color=i_color)
-
-# Panel 4: Mean adaptation across timescales
-mean_a_E = dropdims(mean(A_E, dims=2), dims=2)  # (n_E × nt)
-p4 = plot(t_sol, mean_a_E';
-    label=false, title="Mean SFA Adaptation a(t) (E neurons)",
-    ylabel="a", lw=0.3, alpha=0.5, color=e_color)
-
-# Panel 5: STD b(t)
-p5 = plot(t_sol, B_E';
-    label=false, title="STD b(t) (E neurons)",
-    ylabel="b", lw=0.3, alpha=0.5, color=e_color)
-
-# Panel 6: Synaptic output br(t)
-p6 = plot(t_sol, BR[1:N_E, :]';
-    label=false, title="Synaptic Output br(t)",
-    ylabel="br", xlabel="Time (s)", lw=0.3, alpha=0.4, color=e_color)
-plot!(p6, t_sol, BR[N_E+1:end, :]';
-    label=false, lw=0.3, alpha=0.4, color=i_color)
-
-fig = plot(p1, p2, p3, p4, p5, p6;
-    layout=(6, 1), size=(1200, 1200),
-    plot_title="SRNN Simulation (Julia) — n=$N, n_a_E=$N_A_E, n_b_E=$N_B_E")
+fig = plot_srnn_tseries(t_sol, layer, data;
+    u_E=U_E_plot, u_I=U_I_plot,
+    title_str="SRNN Simulation (Julia) — n=$N, n_a_E=$N_A_E, n_b_E=$N_B_E")
 
 display(fig)
 println("Done. Press Enter to close.")
