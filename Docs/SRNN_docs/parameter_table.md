@@ -13,7 +13,7 @@ r_i = \phi\left( x_i - a_{0_i} - c \sum_{k=1}^{K} a_{ik} \right)
 $$
 
 $$
-\frac{da_{ik}}{dt} = \frac{-a_{ik} + r_i}{\tau_{a_k}}
+\frac{da_{ik}}{dt} = \frac{c_{0_i} - a_{ik} + r_i}{\tau_{a_k}}
 $$
 
 $$
@@ -57,6 +57,7 @@ $$
 | $\tau_{rel}$ | STD release | $\frac{1}{2}$ | s | Synaptic vesicle release time constant |
 | **Adaptation Strength** |||||
 | $c_E$ | SFA coupling | $\frac{1}{12}$ | — | SFA strength per timescale |
+| $c_{0}$ | SFA resting setpoint | 0 | — | Per-neuron adaptation resting point; $c_{0} < 0$ creates intrinsic baseline firing, $c_{0} > 0$ adds tonic suppression |
 | **Activation Function** |||||
 | $\phi$ | Piecewise sigmoid | $(-\infty,\infty) \to [0,1]$ | — | Hard sigmoid with rounded corners (see definition below) |
 | $q_\phi$ | Linear fraction | 0.9 | — | Fraction of the range [0, 1] that is linear (slope 1) |

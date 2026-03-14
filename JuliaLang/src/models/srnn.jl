@@ -242,6 +242,7 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
         ps[:log_tau_a_E_lo] = _s_or_v(_inv_sp(0.25), n_E)  # τ = 0.25s
         ps[:log_tau_a_E_hi] = _s_or_v(_inv_sp(10.0), n_E)  # τ = 10.0s
         ps[:log_c_E] = _s_or_v(-3.0, n_E)     # softplus(-3) ≈ 0.049 ≈ MATLAB 0.15/3
+        ps[:c_0_E] = _s_or_v(0.0, n_E)        # SFA resting setpoint (unconstrained)
     end
 
     # SFA parameters for I neurons
@@ -249,6 +250,7 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
         ps[:log_tau_a_I_lo] = _s_or_v(_inv_sp(0.25), n_I)  # τ = 0.25s
         ps[:log_tau_a_I_hi] = _s_or_v(_inv_sp(10.0), n_I)  # τ = 10.0s
         ps[:log_c_I] = _s_or_v(-3.0, n_I)     # softplus(-3) ≈ 0.049
+        ps[:c_0_I] = _s_or_v(0.0, n_I)        # SFA resting setpoint (unconstrained)
     end
 
     # STD parameters for E neurons
@@ -301,14 +303,14 @@ function (layer::SRNN_ODE)(S::AbstractVector, ps, st)
     # Adaptation derivatives
     da_E_dt = if n_a_E > 0 && !isnothing(parts.a_E)
         τ_a_E = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
-        (r[1:n_E] .- parts.a_E) ./ τ_a_E
+        (ps.c_0_E .+ r[1:n_E] .- parts.a_E) ./ τ_a_E
     else
         Float32[]
     end
 
     da_I_dt = if n_a_I > 0 && !isnothing(parts.a_I)
         τ_a_I = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
-        (r[n_E+1:n] .- parts.a_I) ./ τ_a_I
+        (ps.c_0_I .+ r[n_E+1:n] .- parts.a_I) ./ τ_a_I
     else
         Float32[]
     end
@@ -371,7 +373,8 @@ function (layer::SRNN_ODE)(S::AbstractMatrix, ps, st)
         τ_a_E_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
         τ_a_E_3 = reshape(τ_a_E_2d, size(τ_a_E_2d, 1), size(τ_a_E_2d, 2), 1)
         r_E = reshape(r[1:n_E, :], n_E, 1, B)   # (n_E, 1, B)
-        (r_E .- parts.a_E) ./ τ_a_E_3            # (n_E, n_a_E, B)
+        c_0_E_3 = reshape(ps.c_0_E, :, 1, 1)    # broadcast: (1,1,1) or (n_E,1,1)
+        (c_0_E_3 .+ r_E .- parts.a_E) ./ τ_a_E_3  # (n_E, n_a_E, B)
     else
         zeros(Float32, 0, B)
     end
@@ -380,7 +383,8 @@ function (layer::SRNN_ODE)(S::AbstractMatrix, ps, st)
         τ_a_I_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
         τ_a_I_3 = reshape(τ_a_I_2d, size(τ_a_I_2d, 1), size(τ_a_I_2d, 2), 1)
         r_I = reshape(r[n_E+1:n, :], n_I, 1, B)
-        (r_I .- parts.a_I) ./ τ_a_I_3
+        c_0_I_3 = reshape(ps.c_0_I, :, 1, 1)
+        (c_0_I_3 .+ r_I .- parts.a_I) ./ τ_a_I_3
     else
         zeros(Float32, 0, B)
     end
@@ -443,15 +447,20 @@ function srnn_initial_state(layer::SRNN_ODE, B::Int; rng=Random.default_rng())
 end
 
 # ═══════════════════════════════════════════════════════════════════════
-# SRNNCell — fused Euler sub-stepping wrapper
+# SRNNCell — ODE sub-stepping wrapper (explicit or semi-implicit solver)
 # ═══════════════════════════════════════════════════════════════════════
 
 """
     SRNNCell(n, n_in, n_E; ode_solver_unfolds=4, h=Float32(1/400),
-             readout=:synaptic, kwargs...)
+             readout=:synaptic, solver=:semi_implicit, kwargs...)
 
-Wrapper around SRNN_ODE that applies N Euler sub-steps and returns next state.
+Wrapper around SRNN_ODE that applies N sub-steps and returns next state.
 Drop-in replacement for LTCODE1 in training pipelines.
+
+# Solver modes
+- `:semi_implicit` — fused ratio updates (Eqs 5–7 from semi_implicit_solver.md).
+  Unconditionally stable leak, preserves b∈[0,1] and a≥0. [DEFAULT]
+- `:explicit` — explicit Euler: S += h · dS/dt
 
 # Readout modes (used by `readout(cell, S, ps)`)
 - `:dendritic` — raw dendritic potential x
@@ -463,13 +472,14 @@ struct SRNNCell{F} <: Lux.AbstractLuxLayer
     ode_solver_unfolds::Int
     h::Float32
     readout_mode::Symbol
+    solver::Symbol
 end
 
 function SRNNCell(n::Int, n_in::Int, n_E::Int;
     ode_solver_unfolds::Int=4, h::Float32=Float32(1 / 400),
-    readout::Symbol=:synaptic, kwargs...)
+    readout::Symbol=:synaptic, solver::Symbol=:semi_implicit, kwargs...)
     ode = SRNN_ODE(n, n_in, n_E; kwargs...)
-    SRNNCell(ode, ode_solver_unfolds, h, readout)
+    SRNNCell(ode, ode_solver_unfolds, h, readout, solver)
 end
 
 # Delegate Lux interface
@@ -488,16 +498,201 @@ end
 # Delegate initial state
 srnn_initial_state(cell::SRNNCell, args...; kwargs...) = srnn_initial_state(cell.ode, args...; kwargs...)
 
-# ── SRNNCell call — fused Euler sub-stepping ────────────────────────────
-# Works for both vector S and batched matrix S (dispatch handled by SRNN_ODE)
+# ── SRNNCell call — dispatches to solver ────────────────────────────────
+# Works for both vector S and batched matrix S
 
 function (cell::SRNNCell)(S, ps, st)
-    S_out = S
-    for _ in 1:cell.ode_solver_unfolds
-        dS, _ = cell.ode(S_out, ps, st)
-        S_out = S_out .+ cell.h .* dS
+    if cell.solver === :semi_implicit
+        S_out = S
+        for _ in 1:cell.ode_solver_unfolds
+            S_out = _fused_srnn_step(cell.ode, S_out, ps, st, cell.h)
+        end
+        return S_out, st
+    elseif cell.solver === :explicit
+        S_out = S
+        for _ in 1:cell.ode_solver_unfolds
+            dS, _ = cell.ode(S_out, ps, st)
+            S_out = S_out .+ cell.h .* dS
+        end
+        return S_out, st
+    else
+        error("Unknown solver: $(cell.solver). Use :semi_implicit or :explicit")
     end
-    return S_out, st
+end
+
+# ═══════════════════════════════════════════════════════════════════════
+# FUSED (SEMI-IMPLICIT) SOLVER — one sub-step
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Closed-form ratio updates from semi_implicit_solver.md:
+#   x_new = (x + (Δt/τ_d)·(u + W·(b·r))) / (1 + Δt/τ_d)
+#   a_new = (a + (Δt/τ_a)·(c_0 + r))     / (1 + Δt/τ_a)
+#   b_new = (b + Δt/τ_rec)               / (1 + Δt·(1/τ_rec + r/τ_rel))
+#
+# Unconditionally stable leak, preserves b ∈ [0,1] and a ≥ 0.
+
+# ── Vector version (single sample) ─────────────────────────────────────
+
+function _fused_srnn_step(layer::SRNN_ODE, S::AbstractVector, ps, st, Δt::Float32)
+    n, n_E, n_I = layer.n, layer.n_E, layer.n_I
+    n_a_E, n_a_I = layer.n_a_E, layer.n_a_I
+    n_b_E, n_b_I = layer.n_b_E, layer.n_b_I
+
+    # Unpack state
+    parts = _unpack_state(layer, S)
+    x = parts.x
+
+    # Input
+    u_raw = st.input
+    if isnothing(u_raw)
+        u_raw = zeros(eltype(S), layer.n_in)
+    end
+    u = ps.W_in * u_raw
+
+    # Compute x_eff (with SFA) and firing rate
+    x_eff = _compute_x_eff(layer, parts, ps)
+    r = layer.activation.(x_eff .- ps.a_0)
+
+    # Apply STD
+    b = _extract_b(layer, parts, S)
+    br = b .* r
+
+    # ── Fused x update (Eq 5): x_new = (x + α·drive) / (1 + α)  where α = Δt/τ_d
+    τ_d = NNlib.softplus.(ps.log_tau_d)
+    α_x = Δt ./ τ_d
+    x_new = (x .+ α_x .* (u .+ ps.W * br)) ./ (1.0f0 .+ α_x)
+
+    # ── Fused a update (Eq 6): a_new = (a + (Δt/τ_a)·(c_0 + r)) / (1 + Δt/τ_a)
+    a_E_new = if n_a_E > 0 && !isnothing(parts.a_E)
+        τ_a_E = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
+        α_a_E = Δt ./ τ_a_E
+        r_E = r[1:n_E]  # (n_E,)
+        (parts.a_E .+ α_a_E .* (ps.c_0_E .+ r_E)) ./ (1.0f0 .+ α_a_E)
+    else
+        nothing
+    end
+
+    a_I_new = if n_a_I > 0 && !isnothing(parts.a_I)
+        τ_a_I = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
+        α_a_I = Δt ./ τ_a_I
+        r_I = r[n_E+1:n]  # (n_I,)
+        (parts.a_I .+ α_a_I .* (ps.c_0_I .+ r_I)) ./ (1.0f0 .+ α_a_I)
+    else
+        nothing
+    end
+
+    # ── Fused b update (Eq 7): b_new = (b + Δt/τ_rec) / (1 + Δt·(1/τ_rec + r/τ_rel))
+    b_E_new = if n_b_E > 0 && !isnothing(parts.b_E)
+        τ_b_rec = NNlib.softplus.(ps.log_tau_b_E_rec)
+        τ_b_rel = NNlib.softplus.(ps.log_tau_b_E_rel)
+        r_E = r[1:n_E]
+        (parts.b_E .+ Δt ./ τ_b_rec) ./ (1.0f0 .+ Δt .* (1.0f0 ./ τ_b_rec .+ r_E ./ τ_b_rel))
+    else
+        nothing
+    end
+
+    b_I_new = if n_b_I > 0 && !isnothing(parts.b_I)
+        τ_b_rec = NNlib.softplus.(ps.log_tau_b_I_rec)
+        τ_b_rel = NNlib.softplus.(ps.log_tau_b_I_rel)
+        r_I = r[n_E+1:n]
+        (parts.b_I .+ Δt ./ τ_b_rec) ./ (1.0f0 .+ Δt .* (1.0f0 ./ τ_b_rec .+ r_I ./ τ_b_rel))
+    else
+        nothing
+    end
+
+    # Pack new state [a_E; a_I; b_E; b_I; x]
+    return vcat(
+        isnothing(a_E_new) ? Float32[] : vec(a_E_new),
+        isnothing(a_I_new) ? Float32[] : vec(a_I_new),
+        isnothing(b_E_new) ? Float32[] : b_E_new,
+        isnothing(b_I_new) ? Float32[] : b_I_new,
+        x_new
+    )
+end
+
+# ── Batched version (S is state_dim × B) ───────────────────────────────
+
+function _fused_srnn_step(layer::SRNN_ODE, S::AbstractMatrix, ps, st, Δt::Float32)
+    n, n_E, n_I = layer.n, layer.n_E, layer.n_I
+    n_a_E, n_a_I = layer.n_a_E, layer.n_a_I
+    n_b_E, n_b_I = layer.n_b_E, layer.n_b_I
+    B = size(S, 2)
+
+    # Unpack state
+    parts = _unpack_state(layer, S)
+    x = parts.x
+
+    # Input
+    u_raw = st.input
+    if isnothing(u_raw)
+        u_raw = zeros(eltype(S), layer.n_in, B)
+    end
+    u = ps.W_in * u_raw   # (n, n_in) × (n_in, B) → (n, B)
+
+    # Compute x_eff (with SFA) and firing rate
+    x_eff = _compute_x_eff(layer, parts, ps)
+    r = layer.activation.(x_eff .- ps.a_0)   # a_0 broadcasts: (1,) or (n,) vs (n, B)
+
+    # Apply STD
+    b = _extract_b(layer, parts, S)
+    br = b .* r
+
+    # ── Fused x update
+    τ_d = NNlib.softplus.(ps.log_tau_d)    # (1,) or (n,)
+    α_x = Δt ./ τ_d
+    x_new = (x .+ α_x .* (u .+ ps.W * br)) ./ (1.0f0 .+ α_x)
+
+    # ── Fused a update (E neurons)
+    a_E_new = if n_a_E > 0 && !isnothing(parts.a_E)
+        τ_a_E_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
+        τ_a_E_3 = reshape(τ_a_E_2d, size(τ_a_E_2d, 1), size(τ_a_E_2d, 2), 1)
+        α_a_E = Δt ./ τ_a_E_3
+        r_E = reshape(r[1:n_E, :], n_E, 1, B)   # (n_E, 1, B)
+        c_0_E_3 = reshape(ps.c_0_E, :, 1, 1)
+        (parts.a_E .+ α_a_E .* (c_0_E_3 .+ r_E)) ./ (1.0f0 .+ α_a_E)  # (n_E, n_a_E, B)
+    else
+        nothing
+    end
+
+    # ── Fused a update (I neurons)
+    a_I_new = if n_a_I > 0 && !isnothing(parts.a_I)
+        τ_a_I_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
+        τ_a_I_3 = reshape(τ_a_I_2d, size(τ_a_I_2d, 1), size(τ_a_I_2d, 2), 1)
+        α_a_I = Δt ./ τ_a_I_3
+        r_I = reshape(r[n_E+1:n, :], n_I, 1, B)
+        c_0_I_3 = reshape(ps.c_0_I, :, 1, 1)
+        (parts.a_I .+ α_a_I .* (c_0_I_3 .+ r_I)) ./ (1.0f0 .+ α_a_I)  # (n_I, n_a_I, B)
+    else
+        nothing
+    end
+
+    # ── Fused b update (E neurons)
+    b_E_new = if n_b_E > 0 && !isnothing(parts.b_E)
+        τ_b_rec = NNlib.softplus.(ps.log_tau_b_E_rec)
+        τ_b_rel = NNlib.softplus.(ps.log_tau_b_E_rel)
+        r_E = r[1:n_E, :]
+        (parts.b_E .+ Δt ./ τ_b_rec) ./ (1.0f0 .+ Δt .* (1.0f0 ./ τ_b_rec .+ r_E ./ τ_b_rel))
+    else
+        nothing
+    end
+
+    # ── Fused b update (I neurons)
+    b_I_new = if n_b_I > 0 && !isnothing(parts.b_I)
+        τ_b_rec = NNlib.softplus.(ps.log_tau_b_I_rec)
+        τ_b_rel = NNlib.softplus.(ps.log_tau_b_I_rel)
+        r_I = r[n_E+1:n, :]
+        (parts.b_I .+ Δt ./ τ_b_rec) ./ (1.0f0 .+ Δt .* (1.0f0 ./ τ_b_rec .+ r_I ./ τ_b_rel))
+    else
+        nothing
+    end
+
+    # Pack: flatten 3D adaptation arrays to (n_E*n_a_E, B) before vcat
+    a_E_flat = isnothing(a_E_new) ? zeros(Float32, 0, B) : reshape(a_E_new, n_E * n_a_E, B)
+    a_I_flat = isnothing(a_I_new) ? zeros(Float32, 0, B) : reshape(a_I_new, n_I * n_a_I, B)
+    b_E_out = isnothing(b_E_new) ? zeros(Float32, 0, B) : b_E_new
+    b_I_out = isnothing(b_I_new) ? zeros(Float32, 0, B) : b_I_new
+
+    return vcat(a_E_flat, a_I_flat, b_E_out, b_I_out, x_new)
 end
 
 # ═══════════════════════════════════════════════════════════════════════

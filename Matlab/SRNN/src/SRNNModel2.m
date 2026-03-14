@@ -21,6 +21,8 @@ classdef SRNNModel2 < cRNN
         tau_a_I                     % Adaptation time constants for I neurons (1 x n_a_I)
         c_E = 0.15/3                % Adaptation scaling for E neurons
         c_I = 0.15/3                % Adaptation scaling for I neurons
+        c_0_E = 0.0                   % SFA resting setpoint for E neurons (scalar or n_E x 1)
+        c_0_I = 0.0                   % SFA resting setpoint for I neurons (scalar or n_I x 1)
     end
 
     %% Short-Term Depression (STD) Properties
@@ -383,6 +385,8 @@ classdef SRNNModel2 < cRNN
             params.tau_a_I = obj.tau_a_I;
             params.c_E = obj.c_E;
             params.c_I = obj.c_I;
+            params.c_0_E = obj.c_0_E;
+            params.c_0_I = obj.c_0_I;
 
             % STD params
             params.n_b_E = obj.n_b_E;
@@ -879,6 +883,8 @@ classdef SRNNModel2 < cRNN
 
             c_E = params.c_E;
             c_I = params.c_I;
+            c_0_E = params.c_0_E;
+            c_0_I = params.c_0_I;
             activation_fn = params.activation_function;
 
             %% Unpack state variables
@@ -952,12 +958,12 @@ classdef SRNNModel2 < cRNN
 
             da_E_dt = [];
             if n_E > 0 && n_a_E > 0 && ~isempty(a_E)
-                da_E_dt = (r(E_indices) - a_E) ./ tau_a_E;
+                da_E_dt = (c_0_E + r(E_indices) - a_E) ./ tau_a_E;
             end
 
             da_I_dt = [];
             if n_I > 0 && n_a_I > 0 && ~isempty(a_I)
-                da_I_dt = (r(I_indices) - a_I) ./ tau_a_I;
+                da_I_dt = (c_0_I + r(I_indices) - a_I) ./ tau_a_I;
             end
 
             db_E_dt = [];

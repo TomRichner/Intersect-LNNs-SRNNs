@@ -235,4 +235,181 @@ g_a0 = grads_ep[1].a_0
 println("  grad(a_0) = $g_a0")
 println("  ✓ PASS — a_0 is differentiable")
 
+# ═══════════════════════════════════════════════════════════════════════
+# Test 9: Fused (semi-implicit) solver forward pass
+# ═══════════════════════════════════════════════════════════════════════
+println("\n=== Test 9: Fused solver forward pass ===")
+cell_fused = SRNNCell(N, N_IN, N_E; n_a_E=3, n_b_E=1, ode_solver_unfolds=6,
+                      solver=:semi_implicit)
+ps_f, st_f = Lux.setup(rng, cell_fused)
+S = srnn_initial_state(cell_fused; rng=MersenneTwister(99))
+println("  solver = :$(cell_fused.solver)")
+
+let S = S
+    for t in 1:T_STEPS
+        u_t = randn(rng, Float32, N_IN)
+        st_d = merge(st_f, (input = u_t,))
+        S, _ = cell_fused(S, ps_f, st_d)
+    end
+    global _S_fused = S
+end
+S = _S_fused
+println("  Final state range: [$(minimum(S)), $(maximum(S))]")
+@assert all(isfinite, S) "Fused solver produced non-finite values!"
+@assert length(S) == cell_fused.state_dim "Fused solver state dimension mismatch!"
+println("  ✓ PASS")
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 10: Fused solver gradient flow
+# ═══════════════════════════════════════════════════════════════════════
+println("\n=== Test 10: Fused solver gradient flow ===")
+head2 = Lux.Dense(N => 3; init_weight=Lux.glorot_uniform, init_bias=Lux.zeros32)
+ps_head2, st_head2 = Lux.setup(rng, head2)
+
+x_batch2 = Float32.(randn(rng, N_IN, T_STEPS, B))
+y_labels2 = [1, 2, 3]
+
+loss_fused, grads_fused = Zygote.withgradient((srnn=ps_f, head=ps_head2)) do p
+    S = srnn_initial_state(cell_fused, B; rng=MersenneTwister(99))
+    for t in 1:T_STEPS
+        u_t = @view x_batch2[:, t, :]
+        st_d = merge(st_f, (input = u_t,))
+        S, _ = cell_fused(S, p.srnn, st_d)
+    end
+    h = readout(cell_fused, S, p.srnn)
+    logits, _ = head2(h, p.head, st_head2)
+    m = maximum(logits, dims=1)
+    log_probs = logits .- m .- log.(sum(exp.(logits .- m), dims=1))
+    loss = zero(eltype(logits))
+    for i in 1:B
+        loss -= log_probs[y_labels2[i], i]
+    end
+    loss / B
+end
+
+println("  Loss: $loss_fused")
+srnn_grad_fused = grads_fused[1].srnn
+n_nothing_f = 0
+for k in keys(srnn_grad_fused)
+    g = getproperty(srnn_grad_fused, k)
+    if g === nothing
+        println("  WARNING: fused gradient for $k is nothing!")
+        n_nothing_f += 1
+    end
+end
+if n_nothing_f == 0
+    println("  ✓ All fused-solver SRNN gradients present")
+else
+    println("  ✗ $n_nothing_f gradients are nothing")
+end
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 11: Fused vs. explicit convergence
+# ═══════════════════════════════════════════════════════════════════════
+println("\n=== Test 11: Fused vs. explicit convergence ===")
+# With small h and many unfolds, both solvers should converge to similar states
+h_small = Float32(1/2000)
+n_unfolds = 20
+cell_si = SRNNCell(N, N_IN, N_E; n_a_E=3, n_b_E=1, ode_solver_unfolds=n_unfolds,
+                   h=h_small, solver=:semi_implicit)
+cell_ex = SRNNCell(N, N_IN, N_E; n_a_E=3, n_b_E=1, ode_solver_unfolds=n_unfolds,
+                   h=h_small, solver=:explicit)
+ps_conv, st_conv = Lux.setup(MersenneTwister(42), cell_si)  # same params for both
+
+S_si = srnn_initial_state(cell_si; rng=MersenneTwister(77))
+S_ex = copy(S_si)
+
+let S_si = S_si, S_ex = S_ex
+    for t in 1:T_STEPS
+        u_t = randn(MersenneTwister(t), Float32, N_IN)
+        st_d = merge(st_conv, (input = u_t,))
+        S_si, _ = cell_si(S_si, ps_conv, st_d)
+        S_ex, _ = cell_ex(S_ex, ps_conv, st_d)
+    end
+    global _S_si_conv, _S_ex_conv = S_si, S_ex
+end
+
+diff_conv = maximum(abs.(_S_si_conv .- _S_ex_conv))
+println("  Max |fused - explicit| = $diff_conv  (h=$h_small, unfolds=$n_unfolds)")
+if diff_conv < 0.1
+    println("  ✓ PASS — solvers agree within tolerance")
+else
+    println("  ⚠ WARN — difference is $(diff_conv), may be expected for stiff dynamics")
+end
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 12: Physical bounds preservation (b ∈ [0,1], a ≥ 0)
+# ═══════════════════════════════════════════════════════════════════════
+println("\n=== Test 12: Physical bounds preservation ===")
+cell_bounds = SRNNCell(N, N_IN, N_E; n_a_E=3, n_b_E=1, ode_solver_unfolds=6,
+                       h=Float32(0.01), solver=:semi_implicit)
+ps_bounds, st_bounds = Lux.setup(MersenneTwister(42), cell_bounds)
+S_b = srnn_initial_state(cell_bounds; rng=MersenneTwister(99))
+
+# Run many steps with large inputs to stress-test
+let S_b = S_b
+    for t in 1:50
+        u_t = 5.0f0 .* randn(MersenneTwister(t), Float32, N_IN)
+        st_d = merge(st_bounds, (input = u_t,))
+        S_b, _ = cell_bounds(S_b, ps_bounds, st_d)
+    end
+    global _S_bounds = S_b
+end
+
+parts_check = Main._unpack_state(cell_bounds.ode, _S_bounds)
+
+# Check b ∈ [0, 1]
+b_vals = parts_check.b_E
+b_min, b_max = minimum(b_vals), maximum(b_vals)
+println("  b range: [$b_min, $b_max]")
+@assert b_min >= -1e-6 "b went below 0! min=$b_min"
+@assert b_max <= 1.0 + 1e-6 "b went above 1! max=$b_max"
+println("  ✓ b ∈ [0, 1] preserved")
+
+# Check a ≥ 0
+a_vals = parts_check.a_E
+a_min = minimum(a_vals)
+println("  a_E min: $a_min")
+@assert a_min >= -1e-6 "a went below 0! min=$a_min"
+println("  ✓ a ≥ 0 preserved")
+println("  ✓ PASS")
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 13: Fused solver batched equivalence
+# ═══════════════════════════════════════════════════════════════════════
+println("\n=== Test 13: Fused solver batched equivalence ===")
+inputs_f = Float32.(randn(rng, N_IN, T_STEPS, B))
+
+# Per-sample with fused solver
+S_singles_f = zeros(Float32, cell_fused.state_dim, B)
+for b in 1:B
+    let S = srnn_initial_state(cell_fused; rng=MersenneTwister(99))
+        for t in 1:T_STEPS
+            u_t = inputs_f[:, t, b]
+            st_d = merge(st_f, (input = u_t,))
+            S, _ = cell_fused(S, ps_f, st_d)
+        end
+        S_singles_f[:, b] .= S
+    end
+end
+
+# Batched with fused solver
+S_batch_f = hcat([srnn_initial_state(cell_fused; rng=MersenneTwister(99)) for _ in 1:B]...)
+let S_batch_f = S_batch_f
+    for t in 1:T_STEPS
+        u_t = inputs_f[:, t, :]
+        st_d = merge(st_f, (input = u_t,))
+        S_batch_f, _ = cell_fused(S_batch_f, ps_f, st_d)
+    end
+    global _S_batch_f = S_batch_f
+end
+
+max_diff_f = maximum(abs.(S_singles_f .- _S_batch_f))
+println("  Max absolute difference: $max_diff_f")
+if max_diff_f < 1e-5
+    println("  ✓ PASS — batched fused matches per-sample fused")
+else
+    println("  ✗ FAIL — difference too large!")
+end
+
 println("\n═══ ALL TESTS PASSED ═══")

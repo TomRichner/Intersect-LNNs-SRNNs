@@ -9,7 +9,10 @@ close all; clear; clc;
 setup_paths();
 
 %% Create model
-model = SRNNModel2('n_a_E', 3, 'n_b_E', 1);
+% n = 100
+% model = SRNNModel2('level_of_chaos',1.5,'f',0.58,'n',n, 'indegree',50,'n_a_E', 3, 'n_b_E', 1, 'c_0_E', 0/sqrt(n), 'rng_seeds', [123, 456]+3, 'c_E', 0.15/3);
+
+model = SRNNModel2('n',500,'n_a_E', 3, 'n_b_E', 1, 'n_a_I', 3, 'n_b_I');
 
 %% Build, run, and plot
 model.build();

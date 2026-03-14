@@ -115,7 +115,7 @@ end
 include(joinpath(@__DIR__, "..", "src", "connectivity.jl"))
 
 N = 300
-N_IN = N             # W_in = identity-like, matching MATLAB convention
+N_IN = 10             # W_in = identity-like, matching MATLAB convention
 INDEG = 100
 F_FRAC = 0.5
 N_E = round(Int, F_FRAC * N)
@@ -136,7 +136,7 @@ fig_W = plot_weight_matrix(W_rmt;
 display(fig_W)
 
 # Shared random inputs
-inputs = 0.0f0 .* randn(Random.MersenneTwister(55), Float32, N_IN, T_steps)
+inputs = 0.1f0 .* randn(Random.MersenneTwister(55), Float32, N_IN, T_steps)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Test 1: Identity stepper (LLE ≈ 0)
