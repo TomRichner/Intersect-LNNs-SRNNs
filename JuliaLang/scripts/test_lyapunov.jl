@@ -19,7 +19,7 @@ Conditionally includes stimulus, adaptation, and STD panels.
 Returns the Plots.Plot object.
 """
 function plot_lya_test(title_str, cell, ps, S_traj, local_lya, LLE_val, tau_interval;
-                       u=nothing, n_show_input=5)
+    u=nothing, n_show_input=5)
     ode = cell isa SRNNCell ? cell.ode : cell
     c = cell isa SRNNCell ? cell : nothing
     nt = size(S_traj, 2)
@@ -136,7 +136,7 @@ fig_W = plot_weight_matrix(W_rmt;
 display(fig_W)
 
 # Shared random inputs
-inputs = 0.1f0 .* randn(Random.MersenneTwister(55), Float32, N_IN, T_steps)
+inputs = 0.0f0 .* randn(Random.MersenneTwister(55), Float32, N_IN, T_steps)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Test 1: Identity stepper (LLE ≈ 0)
