@@ -1,6 +1,8 @@
 # Data (downloaded datasets — not committed)
 **/data/
 
+**/figs/
+
 # OS
 .DS_Store
 

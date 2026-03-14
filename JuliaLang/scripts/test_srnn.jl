@@ -129,7 +129,7 @@ sol = solve(prob, Tsit5(); dt=DT, saveat=save_dt, abstol=1e-6, reltol=1e-6)
 println("  Integration complete: $(length(sol.t)) saved time steps")
 
 # ── Unpack and plot using plot_srnn module ─────────────────────────────
-include(joinpath(@__DIR__, "..", "src", "plot_srnn.jl"))
+include(joinpath(@__DIR__, "..", "src", "plotting", "plot_srnn.jl"))
 
 t_sol = sol.t
 S_all = reduce(hcat, sol.u)   # (state_dim, nt) — columns are state vectors

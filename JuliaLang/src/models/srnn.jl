@@ -209,14 +209,14 @@ struct SRNN_ODE{F} <: Lux.AbstractLuxLayer
 end
 
 function SRNN_ODE(n::Int, n_in::Int, n_E::Int;
-                  n_a_E::Int=0, n_a_I::Int=0,
-                  n_b_E::Int=0, n_b_I::Int=0,
-                  per_neuron::Bool=false,
-                  activation=make_piecewise_sigmoid(S_c=0.0))
+    n_a_E::Int=0, n_a_I::Int=0,
+    n_b_E::Int=0, n_b_I::Int=0,
+    per_neuron::Bool=false,
+    activation=make_piecewise_sigmoid(S_c=0.0))
     n_I = n - n_E
     state_dim = n_E * n_a_E + n_I * n_a_I + n_E * n_b_E + n_I * n_b_I + n
     return SRNN_ODE(n, n_in, n_E, n_I, n_a_E, n_a_I, n_b_E, n_b_I,
-                    activation, state_dim, per_neuron)
+        activation, state_dim, per_neuron)
 end
 
 function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
@@ -230,10 +230,10 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
     # Inverse softplus: log(exp(x) - 1), so that softplus(result) = x
     _inv_sp(x) = Float32(log(exp(x) - 1))
 
-    ps = Dict{Symbol, Any}(
-        :W         => σ_w .* randn(rng, Float32, n, n),
-        :W_in      => Float32(0.1) .* randn(rng, Float32, n, n_in),
-        :a_0       => _s_or_v(0.35, n),               # MATLAB: S_c = 0.35
+    ps = Dict{Symbol,Any}(
+        :W => σ_w .* randn(rng, Float32, n, n),
+        :W_in => Float32(0.1) .* randn(rng, Float32, n, n_in),
+        :a_0 => _s_or_v(0.35, n),               # MATLAB: S_c = 0.35
         :log_tau_d => _s_or_v(_inv_sp(0.1), n),        # τ_d = 0.1s
     )
 
@@ -266,7 +266,7 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
     return NamedTuple(ps)
 end
 
-Lux.initialstates(::AbstractRNG, ::SRNN_ODE) = (input = nothing,)
+Lux.initialstates(::AbstractRNG, ::SRNN_ODE) = (input=nothing,)
 
 # ── SRNN_ODE forward pass (vector — single sample) ─────────────────────
 
@@ -424,7 +424,7 @@ function srnn_initial_state(layer::SRNN_ODE; rng=Random.default_rng())
     a_I_0 = zeros(Float32, layer.n_I * layer.n_a_I)
     b_E_0 = ones(Float32, layer.n_E * layer.n_b_E)
     b_I_0 = ones(Float32, layer.n_I * layer.n_b_I)
-    x_0   = Float32(0.1) .* randn(rng, Float32, layer.n)
+    x_0 = Float32(0.1) .* randn(rng, Float32, layer.n)
     return vcat(a_E_0, a_I_0, b_E_0, b_I_0, x_0)
 end
 
@@ -438,7 +438,7 @@ function srnn_initial_state(layer::SRNN_ODE, B::Int; rng=Random.default_rng())
     a_I_0 = zeros(Float32, layer.n_I * layer.n_a_I, B)
     b_E_0 = ones(Float32, layer.n_E * layer.n_b_E, B)
     b_I_0 = ones(Float32, layer.n_I * layer.n_b_I, B)
-    x_0   = Float32(0.1) .* randn(rng, Float32, layer.n, B)
+    x_0 = Float32(0.1) .* randn(rng, Float32, layer.n, B)
     return vcat(a_E_0, a_I_0, b_E_0, b_I_0, x_0)
 end
 
@@ -447,7 +447,7 @@ end
 # ═══════════════════════════════════════════════════════════════════════
 
 """
-    SRNNCell(n, n_in, n_E; ode_solver_unfolds=6, h=0.1f0,
+    SRNNCell(n, n_in, n_E; ode_solver_unfolds=4, h=Float32(1/400),
              readout=:synaptic, kwargs...)
 
 Wrapper around SRNN_ODE that applies N Euler sub-steps and returns next state.
@@ -466,8 +466,8 @@ struct SRNNCell{F} <: Lux.AbstractLuxLayer
 end
 
 function SRNNCell(n::Int, n_in::Int, n_E::Int;
-                  ode_solver_unfolds::Int=6, h::Float32=0.1f0,
-                  readout::Symbol=:synaptic, kwargs...)
+    ode_solver_unfolds::Int=4, h::Float32=Float32(1 / 400),
+    readout::Symbol=:synaptic, kwargs...)
     ode = SRNN_ODE(n, n_in, n_E; kwargs...)
     SRNNCell(ode, ode_solver_unfolds, h, readout)
 end

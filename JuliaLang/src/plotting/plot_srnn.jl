@@ -4,41 +4,15 @@
 # Depends on Plots.jl — kept separate from srnn.jl to avoid loading Plots during training.
 #
 # Usage:
-#   include("src/plot_srnn.jl")
+#   include("src/plotting/plot_srnn.jl")
 #   data = unpack_trajectory(layer, S_all, ps)
 #   fig = plot_srnn_tseries(t, layer, data; u=u_matrix, lya_results=lya)
 #   display(fig)
 
 using Plots
 
-# ═══════════════════════════════════════════════════════════════════════
-# COLORMAPS (ported from SRNNModel2.excitatory_colormap / inhibitory_colormap)
-# ═══════════════════════════════════════════════════════════════════════
-
-const E_PALETTE = [
-    1.00 0.00 0.00;
-    1.00 0.75 0.00;
-    0.85 0.20 0.45;
-    0.90 0.10 0.60;
-    0.90 0.55 0.00;
-    0.55 0.27 0.27;
-    0.86 0.08 0.24;
-    0.60 0.15 0.45;
-]
-
-const I_PALETTE = [
-    0.00 0.45 0.74;
-    0.00 0.75 1.00;
-    0.20 0.47 0.62;
-    0.00 0.50 0.50;
-    0.30 0.75 0.93;
-    0.25 0.62 0.75;
-    0.00 0.80 0.80;
-    0.15 0.55 0.65;
-]
-
-"""Cycle through a palette for line `i` (1-based)."""
-_palette_color(palette, i) = RGB(palette[mod1(i, size(palette, 1)), :]...)
+# Load shared colormaps and palettes
+include(joinpath(@__DIR__, "colormaps.jl"))
 
 # ═══════════════════════════════════════════════════════════════════════
 # UNPACK TRAJECTORY
@@ -151,7 +125,7 @@ unpack_trajectory(cell::SRNNCell, S_all::AbstractMatrix, ps) =
 
 Add E and I neuron traces to a subplot using the E/I palettes.
 """
-function _plot_ei_lines!(p, t, data_E, data_I; lw=0.3, alpha=0.4)
+function _plot_ei_lines!(p, t, data_E, data_I; lw=1.0, alpha=0.4)
     n_E = size(data_E, 1)
     n_I = isnothing(data_I) ? 0 : size(data_I, 1)
 
@@ -244,14 +218,14 @@ function plot_srnn_tseries(t, layer, data;
             # Sum across timescales: (n_E, n_a_E, nt) → (n_E, nt)
             a_E_sum = dropdims(sum(data.a_E, dims=2), dims=2)
             for i in 1:size(a_E_sum, 1)
-                plot!(p_a, t, a_E_sum[i, :]; lw=0.3, alpha=0.5,
+                plot!(p_a, t, a_E_sum[i, :]; lw=1.0, alpha=0.5,
                       color=_palette_color(E_PALETTE, i), label=false)
             end
         end
         if !isnothing(data.a_I)
             a_I_sum = dropdims(sum(data.a_I, dims=2), dims=2)
             for i in 1:size(a_I_sum, 1)
-                plot!(p_a, t, a_I_sum[i, :]; lw=0.3, alpha=0.5,
+                plot!(p_a, t, a_I_sum[i, :]; lw=1.0, alpha=0.5,
                       color=_palette_color(I_PALETTE, i), label=false)
             end
         end
@@ -263,13 +237,13 @@ function plot_srnn_tseries(t, layer, data;
         p_b = plot(; ylabel="depression", legend=false, ylim=(0, 1))
         if !isnothing(data.b_E)
             for i in 1:size(data.b_E, 1)
-                plot!(p_b, t, data.b_E[i, :]; lw=0.3, alpha=0.5,
+                plot!(p_b, t, data.b_E[i, :]; lw=1.0, alpha=0.5,
                       color=_palette_color(E_PALETTE, i), label=false)
             end
         end
         if !isnothing(data.b_I)
             for i in 1:size(data.b_I, 1)
-                plot!(p_b, t, data.b_I[i, :]; lw=0.3, alpha=0.5,
+                plot!(p_b, t, data.b_I[i, :]; lw=1.0, alpha=0.5,
                       color=_palette_color(I_PALETTE, i), label=false)
             end
         end
