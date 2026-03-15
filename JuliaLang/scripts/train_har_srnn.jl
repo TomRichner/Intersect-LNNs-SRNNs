@@ -361,6 +361,20 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
         test_loss, test_acc = evaluate(cell, head, params.cell, params.head,
                                        st_cell, st_head, data.test_x, data.test_y)
 
+        # ── Model selection (by valid accuracy) ─────────────────────
+        # Save BEFORE training so the checkpoint contains the params that
+        # actually produced this validation accuracy.
+        if valid_acc > best_valid_acc && epoch > start_epoch
+            best_valid_acc = valid_acc
+            best_params = deepcopy(params)
+            best_epoch = epoch
+            best_stats = (0.0f0, 0.0f0, valid_loss, valid_acc, test_loss, test_acc)
+            # Save best checkpoint
+            best_path = joinpath(save_dir, "srnn_har_best.jld2")
+            save_checkpoint(best_path, best_params, opt_state, epoch,
+                            best_valid_acc, args)
+        end
+
         # ── Train one epoch ─────────────────────────────────────────
         perm = randperm(n_train)
         n_batches = div(n_train, batch_size)
@@ -398,17 +412,6 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
         train_loss = mean(epoch_losses)
         train_acc = epoch_correct / max(epoch_total, 1)
 
-        # ── Model selection (by valid accuracy) ─────────────────────
-        if valid_acc > best_valid_acc && epoch > start_epoch
-            best_valid_acc = valid_acc
-            best_params = deepcopy(params)
-            best_epoch = epoch
-            best_stats = (train_loss, train_acc, valid_loss, valid_acc, test_loss, test_acc)
-            # Save best checkpoint
-            best_path = joinpath(save_dir, "srnn_har_best.jld2")
-            save_checkpoint(best_path, best_params, opt_state, epoch,
-                            best_valid_acc, args)
-        end
 
         # ── Periodic checkpoint ──────────────────────────────────────
         if save_every > 0 && epoch > start_epoch && epoch % save_every == 0
@@ -478,7 +481,7 @@ function main()
         ps_head = ckpt.params.head
         initial_opt_state = ckpt.opt_state
         start_epoch = ckpt.epoch + 1  # start from next epoch
-        initial_best_valid_acc = ckpt.best_valid_acc
+        initial_best_valid_acc = Float32(ckpt.best_valid_acc)
         println("  Loaded epoch $(ckpt.epoch), best valid acc: $(round(ckpt.best_valid_acc * 100; digits=2))%")
         println("  Resuming from epoch $start_epoch with LR $(args.lr)")
     end
