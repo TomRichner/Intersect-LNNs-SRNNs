@@ -15,9 +15,15 @@
 #   --readout <sym>    Readout mode: synaptic, rate, dendritic (default: synaptic)
 #   --solver <sym>     Solver: semi_implicit, explicit (default: semi_implicit)
 #   --per_neuron        Per-neuron dynamics params (default: shared scalars)
+#
+# Checkpoint flags:
+#   --save <dir>       Checkpoint directory (default: checkpoints/)
+#   --resume <path>    Resume from checkpoint file
+#   --save_every <int> Save periodic checkpoint every N epochs (default: 5)
 
 using Random, Statistics, DelimitedFiles, Printf
 using Lux, NNlib, Zygote, Optimisers
+using JLD2
 
 # ── Include SRNNCell ────────────────────────────────────────────────────
 include(joinpath(@__DIR__, "..", "src", "models", "srnn.jl"))
@@ -41,6 +47,9 @@ function parse_args()
     readout_mode = :synaptic
     solver = :semi_implicit
     per_neuron = false
+    save_dir = joinpath(@__DIR__, "..", "checkpoints")
+    resume_path = ""
+    save_every = 5
 
     for i in eachindex(ARGS)
         if ARGS[i] == "--epochs" && i < length(ARGS)
@@ -67,6 +76,12 @@ function parse_args()
             solver = Symbol(ARGS[i+1])
         elseif ARGS[i] == "--per_neuron"
             per_neuron = true
+        elseif ARGS[i] == "--save" && i < length(ARGS)
+            save_dir = ARGS[i+1]
+        elseif ARGS[i] == "--resume" && i < length(ARGS)
+            resume_path = ARGS[i+1]
+        elseif ARGS[i] == "--save_every" && i < length(ARGS)
+            save_every = parse(Int, ARGS[i+1])
         end
     end
 
@@ -76,7 +91,8 @@ function parse_args()
     end
 
     return (; epochs, model_size, lr, batch_size, n_E, n_a, n_b,
-              unfolds, h, readout_mode, solver, per_neuron)
+              unfolds, h, readout_mode, solver, per_neuron,
+              save_dir, resume_path, save_every)
 end
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -255,26 +271,75 @@ function evaluate(cell, head, ps_cell, ps_head, st_cell, st_head,
 end
 
 # ═══════════════════════════════════════════════════════════════════════
+# CHECKPOINTING
+# ═══════════════════════════════════════════════════════════════════════
+
+function save_checkpoint(path, params, opt_state, epoch, best_valid_acc, args)
+    mkpath(dirname(path))
+    jldsave(path;
+        params = params,
+        opt_state = opt_state,
+        epoch = epoch,
+        best_valid_acc = best_valid_acc,
+        args = args,
+    )
+    println("  💾 Checkpoint saved: $path (epoch $epoch, valid acc $(round(best_valid_acc * 100; digits=2))%)")
+end
+
+function load_checkpoint(path)
+    data = jldopen(path, "r") do f
+        (
+            params = f["params"],
+            opt_state = f["opt_state"],
+            epoch = f["epoch"],
+            best_valid_acc = f["best_valid_acc"],
+            args = f["args"],
+        )
+    end
+    return data
+end
+
+"""
+    adjust_lr!(opt_state, new_lr)
+
+Walk the optimizer state tree and update Adam's learning rate.
+"""
+function adjust_lr!(opt_state, new_lr)
+    Optimisers.adjust!(opt_state, new_lr)
+end
+
+# ═══════════════════════════════════════════════════════════════════════
 # TRAINING
 # ═══════════════════════════════════════════════════════════════════════
 
 function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
-                epochs::Int=50, lr::Float32=0.01f0, batch_size::Int=16)
+                epochs::Int=50, lr::Float32=0.01f0, batch_size::Int=16,
+                start_epoch::Int=0, initial_opt_state=nothing,
+                initial_best_valid_acc::Float32=0.0f0,
+                save_dir::String="checkpoints", save_every::Int=5,
+                args=nothing)
 
     # Combine parameters for gradient computation
     params = (cell = ps_cell, head = ps_head)
 
-    # Set up optimizer
-    opt_state = Optimisers.setup(Optimisers.Adam(lr), params)
+    # Set up optimizer (or use resumed state)
+    if initial_opt_state !== nothing
+        opt_state = initial_opt_state
+        # Update learning rate in the existing optimizer state
+        Optimisers.adjust!(opt_state, lr)
+        println("  Resumed optimizer state, adjusted LR to $lr")
+    else
+        opt_state = Optimisers.setup(Optimisers.Adam(lr), params)
+    end
 
-    best_valid_acc = 0.0f0
+    best_valid_acc = initial_best_valid_acc
     best_params = deepcopy(params)
-    best_epoch = 0
+    best_epoch = start_epoch
     best_stats = nothing
 
     n_train = size(data.train_x, 3)
 
-    for epoch in 0:(epochs - 1)
+    for epoch in start_epoch:(epochs - 1)
         # ── Evaluate ────────────────────────────────────────────────
         valid_loss, valid_acc = evaluate(cell, head, params.cell, params.head,
                                          st_cell, st_head, data.valid_x, data.valid_y)
@@ -319,11 +384,22 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
         train_acc = epoch_correct / max(epoch_total, 1)
 
         # ── Model selection (by valid accuracy) ─────────────────────
-        if valid_acc > best_valid_acc && epoch > 0
+        if valid_acc > best_valid_acc && epoch > start_epoch
             best_valid_acc = valid_acc
             best_params = deepcopy(params)
             best_epoch = epoch
             best_stats = (train_loss, train_acc, valid_loss, valid_acc, test_loss, test_acc)
+            # Save best checkpoint
+            best_path = joinpath(save_dir, "srnn_har_best.jld2")
+            save_checkpoint(best_path, best_params, opt_state, epoch,
+                            best_valid_acc, args)
+        end
+
+        # ── Periodic checkpoint ──────────────────────────────────────
+        if save_every > 0 && epoch > start_epoch && epoch % save_every == 0
+            periodic_path = joinpath(save_dir, @sprintf("srnn_har_epoch_%03d.jld2", epoch))
+            save_checkpoint(periodic_path, params, opt_state, epoch,
+                            best_valid_acc, args)
         end
 
         # ── Log ─────────────────────────────────────────────────────
@@ -362,6 +438,10 @@ function main()
     println("  Solver: $(args.solver), h: $(args.h), unfolds: $(args.unfolds)")
     println("  Readout: $(args.readout_mode)")
     println("  LR: $(args.lr), Epochs: $(args.epochs), Batch: $(args.batch_size)")
+    println("  Save dir: $(args.save_dir), Save every: $(args.save_every) epochs")
+    if !isempty(args.resume_path)
+        println("  Resuming from: $(args.resume_path)")
+    end
 
     rng = MersenneTwister(42)
 
@@ -371,6 +451,23 @@ function main()
     # Build model
     cell, head, ps_cell, st_cell, ps_head, st_head = build_model(args, rng)
 
+    # Handle resume
+    start_epoch = 0
+    initial_opt_state = nothing
+    initial_best_valid_acc = 0.0f0
+
+    if !isempty(args.resume_path)
+        println("\nLoading checkpoint: $(args.resume_path)")
+        ckpt = load_checkpoint(args.resume_path)
+        ps_cell = ckpt.params.cell
+        ps_head = ckpt.params.head
+        initial_opt_state = ckpt.opt_state
+        start_epoch = ckpt.epoch + 1  # start from next epoch
+        initial_best_valid_acc = ckpt.best_valid_acc
+        println("  Loaded epoch $(ckpt.epoch), best valid acc: $(round(ckpt.best_valid_acc * 100; digits=2))%")
+        println("  Resuming from epoch $start_epoch with LR $(args.lr)")
+    end
+
     # Count parameters
     n_cell_params = sum(length(getproperty(ps_cell, k)) for k in keys(ps_cell))
     n_head_params = args.model_size * N_CLASSES + N_CLASSES
@@ -379,33 +476,40 @@ function main()
     println("  Total params: $(n_cell_params + n_head_params)")
     println("  State dim: $(cell.state_dim)")
 
-    # Gradient smoke test (batched — 2 samples)
-    println("\nGradient smoke test (batched)...")
-    test_x = data.train_x[:, :, 1:2]    # (features, seq_len, 2)
-    test_y = data.train_y[end, 1:2]      # (2,)
+    # Gradient smoke test (only on fresh start)
+    if isempty(args.resume_path)
+        println("\nGradient smoke test (batched)...")
+        test_x = data.train_x[:, :, 1:2]    # (features, seq_len, 2)
+        test_y = data.train_y[end, 1:2]      # (2,)
 
-    test_loss, test_grads = Zygote.withgradient((cell=ps_cell, head=ps_head)) do p
-        batch_loss(cell, head, p.cell, p.head, st_cell, st_head, test_x, test_y)
-    end
-    println("  Initial loss: $(@sprintf("%.4f", test_loss)) (expected ~1.79 = -log(1/6))")
-
-    # Check gradients are non-nothing
-    cell_grad = test_grads[1].cell
-    head_grad = test_grads[1].head
-    for k in keys(cell_grad)
-        g = getproperty(cell_grad, k)
-        if g === nothing
-            println("  WARNING: SRNN gradient for $k is nothing!")
+        test_loss, test_grads = Zygote.withgradient((cell=ps_cell, head=ps_head)) do p
+            batch_loss(cell, head, p.cell, p.head, st_cell, st_head, test_x, test_y)
         end
+        println("  Initial loss: $(@sprintf("%.4f", test_loss)) (expected ~1.79 = -log(1/6))")
+
+        # Check gradients are non-nothing
+        cell_grad = test_grads[1].cell
+        head_grad = test_grads[1].head
+        for k in keys(cell_grad)
+            g = getproperty(cell_grad, k)
+            if g === nothing
+                println("  WARNING: SRNN gradient for $k is nothing!")
+            end
+        end
+        println("  All SRNN gradients present ✓")
+        println("  Head weight gradient norm: $(sum(abs2, head_grad.weight))")
+        println("  Head bias gradient norm: $(sum(abs2, head_grad.bias))")
     end
-    println("  All SRNN gradients present ✓")
-    println("  Head weight gradient norm: $(sum(abs2, head_grad.weight))")
-    println("  Head bias gradient norm: $(sum(abs2, head_grad.bias))")
 
     # Train
     println("\nStarting training...\n")
     best_params = train!(cell, head, ps_cell, ps_head, st_cell, st_head, data;
-                         epochs=args.epochs, lr=args.lr, batch_size=args.batch_size)
+                         epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
+                         start_epoch=start_epoch,
+                         initial_opt_state=initial_opt_state,
+                         initial_best_valid_acc=initial_best_valid_acc,
+                         save_dir=args.save_dir, save_every=args.save_every,
+                         args=args)
 end
 
 main()
