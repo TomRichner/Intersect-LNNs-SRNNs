@@ -18,26 +18,27 @@ Parameters:
 - `S_c`: Center/shift parameter
 """
 function piecewise_sigmoid(x; S_a=0.9, S_c=0.35)
-    a = S_a / 2.0
-    c = S_c
-    k = 0.5 / (1.0 - 2.0 * a)
+    T = eltype(x)
+    a = T(S_a) / T(2)
+    c = T(S_c)
+    k = T(0.5) / (T(1) - T(2) * a)
 
-    x1 = c + a - 1.0
+    x1 = c + a - T(1)
     x2 = c - a
     x3 = c + a
-    x4 = c + 1.0 - a
+    x4 = c + T(1) - a
 
     # Branchless piecewise evaluation using ifelse
     # Regions: x < x1 → 0 | x1..x2 → left quad | x2..x3 → linear | x3..x4 → right quad | x4< → 1
     left_quad = k .* (x .- x1).^2
-    linear    = (x .- c) .+ 0.5
-    right_quad = 1.0 .- k .* (x .- x4).^2
+    linear    = (x .- c) .+ T(0.5)
+    right_quad = T(1) .- k .* (x .- x4).^2
 
-    y = ifelse.(x .< x1, 0.0,
+    y = ifelse.(x .< x1, T(0),
         ifelse.(x .< x2, left_quad,
         ifelse.(x .<= x3, linear,
         ifelse.(x .<= x4, right_quad,
-        1.0))))
+        T(1)))))
 
     return y
 end
@@ -48,23 +49,24 @@ end
 Scalar version of piecewise_sigmoid for use in broadcasting.
 """
 function piecewise_sigmoid_scalar(x::Real; S_a=0.9, S_c=0.35)
-    a = S_a / 2.0
-    c = S_c
-    k = 0.5 / (1.0 - 2.0 * a)
+    T = typeof(x)
+    a = T(S_a) / T(2)
+    c = T(S_c)
+    k = T(0.5) / (T(1) - T(2) * a)
 
-    x1 = c + a - 1.0
+    x1 = c + a - T(1)
     x2 = c - a
     x3 = c + a
-    x4 = c + 1.0 - a
+    x4 = c + T(1) - a
 
     if x < x1
         return zero(x)
     elseif x < x2
         return k * (x - x1)^2
     elseif x <= x3
-        return (x - c) + 0.5
+        return (x - c) + T(0.5)
     elseif x <= x4
-        return 1.0 - k * (x - x4)^2
+        return T(1) - k * (x - x4)^2
     else
         return one(x)
     end
