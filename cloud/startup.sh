@@ -54,6 +54,10 @@ cd /opt/srnn-repo
 git pull --ff-only || echo "WARNING: git pull failed, using baked-in version"
 echo "  Commit: $(git rev-parse --short HEAD)"
 
+# Ensure packages are in sync after pull (fast if Manifest unchanged)
+echo "  Syncing Julia packages..."
+julia --project=JuliaLang -e 'using Pkg; Pkg.instantiate(); println("  Packages OK")'
+
 # ── Step 2: Download dataset from GCS ──────────────────────────────
 echo ""
 echo "=== Step 2: Downloading dataset '${EXPERIMENT}' ==="
