@@ -419,6 +419,12 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::TrafficDat
                                     st_cell, st_head, x_batch)
             epoch_ae += sum(abs.(preds .- y_batch))
             epoch_count += SEQ_LEN * batch_size
+
+            # Batch progress (first batch + every 50)
+            if b == 1 || b % 50 == 0
+                @printf("  [batch %d/%d] loss: %.4f\n", b, n_batches, loss_val)
+                flush(stdout)
+            end
         end
 
         train_loss = mean(epoch_losses)
