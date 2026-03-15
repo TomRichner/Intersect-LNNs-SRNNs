@@ -60,26 +60,26 @@ From Hasani et al. 2021, we need to reproduce the following. All reported as
 
 | # | Experiment   | Task Type      | Metric   | Seq Len | Features | Classes/Out | VM Size         |
 |---|-------------|----------------|----------|---------|----------|-------------|-----------------|
-| 1 | HAR          | Classification | Accuracy | 16      | 561      | 6           | e2-standard-4   |
-| 2 | Gesture      | Classification | Accuracy | 32      | varies   | 5           | e2-standard-4   |
-| 3 | Occupancy    | Classification | Accuracy | 16      | 5        | 2           | e2-standard-4   |
-| 4 | SMnist       | Classification | Accuracy | 784     | 1        | 10          | e2-standard-8   |
-| 5 | Traffic      | Regression     | MSE      | 32      | varies   | 1           | e2-standard-4   |
-| 6 | Power        | Regression     | MSE      | 32      | varies   | 1           | e2-standard-4   |
-| 7 | Ozone        | Classification | F1-score | 32      | 72       | 2           | e2-standard-4   |
+| 1 | HAR          | Classification | Accuracy | 16      | 561      | 6           | e2-highmem-2    |
+| 2 | Gesture      | Classification | Accuracy | 32      | varies   | 5           | e2-highmem-2    |
+| 3 | Occupancy    | Classification | Accuracy | 16      | 5        | 2           | e2-highmem-2    |
+| 4 | SMnist       | Classification | Accuracy | 784     | 1        | 10          | e2-highmem-4    |
+| 5 | Traffic      | Regression     | MSE      | 32      | varies   | 1           | e2-highmem-2    |
+| 6 | Power        | Regression     | MSE      | 32      | varies   | 1           | e2-highmem-2    |
+| 7 | Ozone        | Classification | F1-score | 32      | 72       | 2           | e2-highmem-2    |
 
 ### Tables 4, 5 — Person Activity
 
 | # | Experiment   | Task Type      | Metric   | Setting | VM Size         |
 |---|-------------|----------------|----------|---------|-----------------|
-| 8 | Person (1st) | Classification | Accuracy | Standard| e2-standard-4   |
-| 9 | Person (2nd) | Classification | Accuracy | Rubanova| e2-standard-4   |
+| 8 | Person (1st) | Classification | Accuracy | Standard| e2-highmem-2    |
+| 9 | Person (2nd) | Classification | Accuracy | Rubanova| e2-highmem-2    |
 
 ### Table 6 — Half-Cheetah
 
 | #  | Experiment   | Task Type  | Metric | VM Size         |
 |----|-------------|------------|--------|-----------------|
-| 10 | Cheetah      | Regression | MSE    | e2-standard-4   |
+| 10 | Cheetah      | Regression | MSE    | e2-highmem-2    |
 
 ### Total Runs
 
@@ -215,11 +215,29 @@ the same pattern as `train_har_srnn.jl`:
 # Creates 5 VMs: srnn-har-seed1 through srnn-har-seed5
 ```
 
-#### Step 3.3: `monitor.sh` — Check run status
+#### Step 3.3: `monitor.sh` — Check run status and quota usage
 ```
 ./cloud/monitor.sh
-# Shows: VM name, status (RUNNING/TERMINATED), GCS result status
+# Output:
+#   === vCPU Quota ===
+#   USED: 10 / 64  (5 VMs × 2 vCPU)
+#   AVAILABLE: 54  (can launch 27 more e2-highmem-2)
+#
+#   === Running VMs ===
+#   NAME              STATUS     MACHINE         ZONE
+#   srnn-har-seed1    RUNNING    e2-highmem-2    us-central1-a
+#   srnn-har-seed2    RUNNING    e2-highmem-2    us-central1-a
+#   ...
+#
+#   === Results in GCS ===
+#   srnn/har/seed1:  ✅ final_metrics.json found
+#   srnn/har/seed2:  ⏳ training in progress
+#   srnn/har/seed3:  ❌ no results yet
 ```
+Key features:
+- Shows vCPU quota usage vs limit (64 max) to avoid launch failures
+- Lists all running VMs with status
+- Checks GCS bucket for completed results per experiment/seed
 
 #### Step 3.4: `collect_results.sh` — Aggregate results
 ```
@@ -271,29 +289,33 @@ gs://srnn-experiments/
 
 | Component | Estimate |
 |-----------|----------|
-| **e2-standard-4** ($0.134/hr) × 100 runs × ~3 hrs avg | ~$40 |
-| **Spot discount** (60-70% off) | ~$13-16 |
-| **e2-standard-8** for SMnist ($0.268/hr) × 10 runs × ~5 hrs | ~$13 (or ~$5 Spot) |
+| **e2-highmem-2** ($0.090/hr) × 90 runs × ~3 hrs avg | ~$24 |
+| **e2-highmem-4** for SMnist ($0.181/hr) × 10 runs × ~5 hrs | ~$9 |
+| **Spot discount** (60-70% off) | ~$10-12 total |
 | **GCS storage** (<10 GB datasets + results) | ~$0.20/month |
 | **Network egress** (results download) | ~$0.10 |
-| **VM image storage** (~10 GB) | ~$0.50/month |
+| **VM image storage** (~30 GB) | ~$1.50/month |
 | | |
-| **Total estimate (with Spot VMs)** | **~$20-25** |
-| **Total estimate (without Spot)** | **~$55** |
+| **Total estimate (with Spot VMs)** | **~$12-15** |
+| **Total estimate (without Spot)** | **~$35** |
 
 ---
 
 ## VM Types Reference
 
-| Machine Type   | vCPUs | RAM (GB) | $/hr (standard) | $/hr (Spot) | Use Case |
-|---------------|-------|----------|-----------------|-------------|----------|
-| e2-standard-2  | 2     | 8        | $0.067          | ~$0.020     | Tiny datasets |
-| e2-standard-4  | 4     | 16       | $0.134          | ~$0.040     | Most experiments |
-| e2-standard-8  | 8     | 32       | $0.268          | ~$0.080     | SMnist, large datasets |
-| e2-standard-16 | 16    | 64       | $0.536          | ~$0.161     | If 32 GB isn't enough |
+| Machine Type    | vCPUs | RAM (GB) | $/hr (standard) | $/hr (Spot) | Use Case |
+|----------------|-------|----------|-----------------|-------------|----------|
+| **e2-highmem-2** | 2   | 16       | $0.090          | ~$0.027     | **Default — all experiments** |
+| e2-highmem-4    | 4    | 32       | $0.181          | ~$0.054     | SMnist (if 16 GB OOMs) |
+| e2-standard-4   | 4    | 16       | $0.134          | ~$0.040     | Not recommended (same RAM, costs more) |
+| e2-highmem-8    | 8    | 64       | $0.362          | ~$0.109     | If 32 GB isn't enough |
 
-> Julia single-threaded BPTT doesn't benefit much from >4 cores. RAM is the
-> bottleneck, so choose VM size based on memory needs.
+> **Why e2-highmem-2?** Julia's Zygote BPTT is single-threaded — extra CPUs are
+> wasted. RAM is the bottleneck (~9 GB observed for HAR). The highmem-2 gives
+> 16 GB RAM with only 2 vCPUs, which is 33% cheaper than e2-standard-4.
+
+> **vCPU Quota:** Project has a 64 vCPU quota. With e2-highmem-2 (2 vCPU each),
+> we can run **32 concurrent VMs** vs only 16 with e2-standard-4.
 
 ---
 
@@ -434,144 +456,41 @@ ozone, person, power, traffic). SMnist uses keras download (handled in training 
 
 - [x] Done (2025-03-15)
 
-### Step 3: Build a custom Julia VM image (`build_image.sh`)
+### Step 3: Build a custom Julia VM image (`build_image.sh`) ✅
 
 Write and run `cloud/build_image.sh`. This creates a reusable disk image
-with Julia 1.11.4 + all packages pre-compiled so each experiment VM boots
-in ~60 seconds instead of ~15 minutes:
+with Julia 1.12.5 + all packages pre-compiled so each experiment VM boots
+in ~60 seconds instead of ~15 minutes.
 
-```bash
-# 3a. Create a temporary VM from a base image
-gcloud compute instances create julia-image-builder \
-    --zone=us-central1-a \
-    --machine-type=e2-standard-4 \
-    --image-family=debian-12 \
-    --image-project=debian-cloud \
-    --boot-disk-size=30GB
+Ran via `./cloud/build_image.sh` (with manual SSH for install step).
+Required `libssl-dev` and `libcurl4-openssl-dev` for Julia's LibGit2 stdlib.
 
-# 3b. SSH in and install Julia + packages
-gcloud compute ssh julia-image-builder --zone=us-central1-a --command='
-    # Install Julia
-    wget -q https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.4-linux-x86_64.tar.gz
-    sudo tar -xzf julia-1.11.4-linux-x86_64.tar.gz -C /opt/
-    sudo ln -s /opt/julia-1.11.4/bin/julia /usr/local/bin/julia
-    rm julia-1.11.4-linux-x86_64.tar.gz
+**Result:** Image `srnn-julia-v1` (family: `srnn-julia`), 30 GB disk.
+545 packages precompiled in ~17 minutes. Key packages verified (Lux, Zygote,
+Optimisers, NNlib, JLD2).
 
-    # Install git, build deps
-    sudo apt-get update && sudo apt-get install -y git build-essential
+**Verification:** `gcloud compute images describe srnn-julia-v1` shows `STATUS: READY`.
 
-    # Clone repo and precompile Julia packages
-    git clone https://github.com/TomRichner/Intersect-LNNs-SRNNs.git /opt/srnn-repo
-    cd /opt/srnn-repo
-    julia --project=JuliaLang -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
-'
+- [x] Done (2025-03-15)
 
-# 3c. Stop the VM (required before creating image)
-gcloud compute instances stop julia-image-builder --zone=us-central1-a
+### Step 4: Write the VM startup and launch scripts ✅
 
-# 3d. Create image from the disk
-gcloud compute images create srnn-julia-v1 \
-    --source-disk=julia-image-builder \
-    --source-disk-zone=us-central1-a \
-    --family=srnn-julia
+Scripts created:
 
-# 3e. Delete the temporary VM
-gcloud compute instances delete julia-image-builder --zone=us-central1-a --quiet
-```
+| Script | Purpose |
+|--------|---------|
+| `cloud/startup.sh` | Runs on VM boot: pulls code, downloads data, checks for resume checkpoint, trains, uploads results to GCS, self-deletes |
+| `cloud/launch_run.sh` | Launches a single VM: pre-flight checks (quota, existing VM, existing results), passes all config as VM metadata |
+| `cloud/launch_batch.sh` | Launches N_SEEDS VMs for an experiment (calls launch_run.sh in a loop) |
+| `cloud/monitor.sh` | Shows vCPU quota usage, running VMs, and per-seed result status from GCS |
 
-**Verification:** `gcloud compute images list --filter="family=srnn-julia"` shows
-`srnn-julia-v1`.
+**Important:** The `--seed` flag is not yet implemented in `train_har_srnn.jl`.
+This needs to be added before running cloud experiments (set RNG seed for reproducibility).
 
-- [ ] Done
+**Verified:** `monitor.sh` tested — shows quota (0/200 vCPUs), no running VMs,
+har results [0/5] not started.
 
-### Step 4: Write the VM startup script (`startup.sh`) and launch script (`launch_run.sh`)
-
-Write `cloud/startup.sh` — the script that runs inside each VM on boot:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# Read VM metadata (set by launch_run.sh)
-EXPERIMENT=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/experiment" -H "Metadata-Flavor: Google")
-MODEL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/model" -H "Metadata-Flavor: Google")
-SEED=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/seed" -H "Metadata-Flavor: Google")
-TRAIN_ARGS=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/train-args" -H "Metadata-Flavor: Google")
-GCS_BUCKET=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket" -H "Metadata-Flavor: Google")
-VM_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
-VM_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | awk -F/ '{print $NF}')
-
-RESULT_PATH="${GCS_BUCKET}/results/${MODEL}/${EXPERIMENT}/seed${SEED}"
-LOG_FILE="/tmp/training.log"
-
-exec > >(tee -a "$LOG_FILE") 2>&1
-echo "=== Starting ${MODEL}-${EXPERIMENT}-seed${SEED} at $(date) ==="
-
-# 1. Pull latest code
-cd /opt/srnn-repo && git pull
-
-# 2. Download dataset
-mkdir -p JuliaLang/data/${EXPERIMENT}
-gsutil -m cp -r "${GCS_BUCKET}/datasets/${EXPERIMENT}/*" "JuliaLang/data/${EXPERIMENT}/"
-
-# 3. Check for existing checkpoint (Spot VM resume)
-CHECKPOINT_PATH="${GCS_BUCKET}/checkpoints/${MODEL}-${EXPERIMENT}-seed${SEED}/latest.jld2"
-RESUME_FLAG=""
-if gsutil -q stat "$CHECKPOINT_PATH" 2>/dev/null; then
-    gsutil cp "$CHECKPOINT_PATH" /tmp/resume_checkpoint.jld2
-    RESUME_FLAG="--resume /tmp/resume_checkpoint.jld2"
-fi
-
-# 4. Run training
-julia --project=JuliaLang "JuliaLang/scripts/train_${EXPERIMENT}_srnn.jl" \
-    --seed $SEED \
-    --save /tmp/checkpoints \
-    $TRAIN_ARGS \
-    $RESUME_FLAG
-
-# 5. Upload results
-gsutil cp "$LOG_FILE" "${RESULT_PATH}/training_log.txt"
-gsutil cp /tmp/checkpoints/*best* "${RESULT_PATH}/" 2>/dev/null || true
-gsutil cp /tmp/checkpoints/final_metrics.json "${RESULT_PATH}/" 2>/dev/null || true
-
-echo "=== Completed at $(date) ==="
-gsutil cp "$LOG_FILE" "${RESULT_PATH}/training_log.txt"
-
-# 6. Self-delete
-gcloud compute instances delete "$VM_NAME" --zone="$VM_ZONE" --quiet
-```
-
-Write `cloud/launch_run.sh`:
-
-```bash
-#!/bin/bash
-# Usage: ./cloud/launch_run.sh <experiment> <model> <seed>
-# Example: ./cloud/launch_run.sh har srnn 1
-source cloud/config.env
-source "cloud/experiments/$1.env"
-MODEL=${2:-srnn}
-SEED=${3:-1}
-
-VM_NAME="${MODEL}-${EXPERIMENT_NAME}-seed${SEED}"
-
-gcloud compute instances create "$VM_NAME" \
-    --project="$GCP_PROJECT" \
-    --zone="$GCP_ZONE" \
-    --machine-type="${MACHINE_TYPE:-$GCP_MACHINE_TYPE}" \
-    --image-family="$GCP_IMAGE_FAMILY" \
-    ${GCP_USE_SPOT:+--provisioning-model=SPOT --instance-termination-action=STOP} \
-    --metadata=experiment=${EXPERIMENT_NAME},model=${MODEL},seed=${SEED},train-args="${ARGS}",gcs-bucket="${GCS_BUCKET}" \
-    --metadata-from-file=startup-script=cloud/startup.sh \
-    --scopes=storage-full
-
-echo "Launched: $VM_NAME"
-```
-
-**Verification:** Run a dry-run test:
-`./cloud/launch_run.sh har srnn 1` → check VM appears in
-`gcloud compute instances list`.
-
-- [ ] Done
+- [x] Done (2025-03-15)
 
 ### Step 5: Smoke test with one HAR cloud run
 
