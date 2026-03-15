@@ -239,15 +239,15 @@ end
 # x_batch: (N_FEATURES, seq_len, B)
 # Returns: preds (seq_len, B) — predicted traffic volume at each timestep
 #
-# NOTE: We collect per-timestep outputs into a Vector and vcat them to avoid
-# in-place mutation (preds[t,:] = ...) which Zygote cannot differentiate.
+# Uses Zygote.Buffer to accumulate per-timestep outputs without triggering
+# Zygote's mutation restriction on regular arrays.
 function forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
     B = size(x_batch, 3)
     T = size(x_batch, 2)
     S = srnn_initial_state(cell, B)
 
-    # Collect per-timestep row vectors: each is (1, B)
-    rows = Vector{Any}(undef, T)
+    # Zygote.Buffer allows setindex! inside differentiated code
+    buf = Zygote.Buffer(x_batch, T, B)
 
     for t in 1:T
         u_t = @view x_batch[:, t, :]
@@ -257,11 +257,10 @@ function forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
         # Readout + Dense at each timestep
         obs = readout(cell, S, ps_cell)      # (model_size, B)
         out, _ = head(obs, ps_head, st_head)  # (1, B)
-        rows[t] = out                          # (1, B) — keep as matrix row
+        buf[t, :] = out[1, :]                 # scalar output per sample
     end
 
-    # Stack: vcat of T × (1, B) → (T, B)
-    return reduce(vcat, rows)
+    return copy(buf)  # copy() converts Buffer → regular Array for downstream ops
 end
 
 # ── Batched MSE loss (per-timestep) ─────────────────────────────────────

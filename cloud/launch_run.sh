@@ -102,7 +102,7 @@ gcloud compute instances create "${VM_NAME}" \
     ${SPOT_FLAGS} \
     --metadata="experiment=${EXPERIMENT_NAME},model=${MODEL},seed=${SEED},train-script=${TRAIN_SCRIPT},train-args=${ARGS},gcs-bucket=${GCS_BUCKET}" \
     --metadata-from-file=startup-script="${SCRIPT_DIR}/startup.sh" \
-    --scopes=storage-full
+    --scopes=storage-full,compute-rw
 
 echo ""
 echo "=== VM '${VM_NAME}' launched ==="
