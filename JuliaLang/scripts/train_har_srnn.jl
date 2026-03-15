@@ -20,6 +20,7 @@
 #   --save <dir>       Checkpoint directory (default: checkpoints/)
 #   --resume <path>    Resume from checkpoint file
 #   --save_every <int> Save periodic checkpoint every N epochs (default: 5)
+#   --warmup <int>     LR warmup epochs: ramp from lr/10 to lr (default: 0 = off)
 
 using Random, Statistics, DelimitedFiles, Printf
 using Lux, NNlib, Zygote, Optimisers
@@ -50,6 +51,7 @@ function parse_args()
     save_dir = joinpath(@__DIR__, "..", "checkpoints")
     resume_path = ""
     save_every = 5
+    warmup_epochs = 0
 
     for i in eachindex(ARGS)
         if ARGS[i] == "--epochs" && i < length(ARGS)
@@ -82,6 +84,8 @@ function parse_args()
             resume_path = ARGS[i+1]
         elseif ARGS[i] == "--save_every" && i < length(ARGS)
             save_every = parse(Int, ARGS[i+1])
+        elseif ARGS[i] == "--warmup" && i < length(ARGS)
+            warmup_epochs = parse(Int, ARGS[i+1])
         end
     end
 
@@ -92,7 +96,7 @@ function parse_args()
 
     return (; epochs, model_size, lr, batch_size, n_E, n_a, n_b,
               unfolds, h, readout_mode, solver, per_neuron,
-              save_dir, resume_path, save_every)
+              save_dir, resume_path, save_every, warmup_epochs)
 end
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -317,7 +321,7 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
                 start_epoch::Int=0, initial_opt_state=nothing,
                 initial_best_valid_acc::Float32=0.0f0,
                 save_dir::String="checkpoints", save_every::Int=5,
-                args=nothing)
+                warmup_epochs::Int=0, args=nothing)
 
     # Combine parameters for gradient computation
     params = (cell = ps_cell, head = ps_head)
@@ -340,6 +344,17 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
     n_train = size(data.train_x, 3)
 
     for epoch in start_epoch:(epochs - 1)
+        # ── LR warmup ───────────────────────────────────────────────
+        if warmup_epochs > 0 && epoch < warmup_epochs
+            # Linear ramp from lr/10 to lr
+            warmup_frac = (epoch + 1) / warmup_epochs
+            current_lr = lr * (0.1f0 + 0.9f0 * Float32(warmup_frac))
+            Optimisers.adjust!(opt_state, current_lr)
+        elseif warmup_epochs > 0 && epoch == warmup_epochs
+            # Reached target LR — set it exactly once
+            Optimisers.adjust!(opt_state, lr)
+        end
+
         # ── Evaluate ────────────────────────────────────────────────
         valid_loss, valid_acc = evaluate(cell, head, params.cell, params.head,
                                          st_cell, st_head, data.valid_x, data.valid_y)
@@ -509,7 +524,7 @@ function main()
                          initial_opt_state=initial_opt_state,
                          initial_best_valid_acc=initial_best_valid_acc,
                          save_dir=args.save_dir, save_every=args.save_every,
-                         args=args)
+                         warmup_epochs=args.warmup_epochs, args=args)
 end
 
 main()
