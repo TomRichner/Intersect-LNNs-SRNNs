@@ -2,14 +2,20 @@
 # ─────────────────────────────────────────────────────────────────────
 # startup.sh — VM startup script for cloud experiment runs
 # ─────────────────────────────────────────────────────────────────────
-# This script runs automatically on VM boot. It is passed as
+# This script runs automatically on VM boot (as root). It is passed as
 # --metadata-from-file=startup-script=cloud/startup.sh when creating
 # the VM via launch_run.sh.
 #
 # It reads experiment config from VM metadata, downloads the dataset,
 # runs training, uploads results to GCS, and self-deletes the VM.
+#
+# NOTE: Julia and git commands run as 'tom' (the user who built the
+# VM image) so that pre-compiled packages are found correctly.
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
+
+# Helper: run a command as the tom user (who owns the Julia depot)
+run_as_tom() { sudo -u tom -i bash -c "$*"; }
 
 # ── Read VM metadata (set by launch_run.sh) ─────────────────────────
 META_URL="http://metadata.google.internal/computeMetadata/v1/instance"
@@ -31,6 +37,7 @@ CHECKPOINT_DIR="/tmp/checkpoints"
 LOG_FILE="/tmp/training.log"
 
 # ── Redirect all output to log file ────────────────────────────────
+touch "$LOG_FILE" && chmod 666 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "═══════════════════════════════════════════════════════════════"
@@ -50,20 +57,17 @@ echo "════════════════════════�
 # ── Step 1: Update code ────────────────────────────────────────────
 echo ""
 echo "=== Step 1: Pulling latest code ==="
-cd /opt/srnn-repo
-git pull --ff-only || echo "WARNING: git pull failed, using baked-in version"
-echo "  Commit: $(git rev-parse --short HEAD)"
-
-# Ensure packages are in sync after pull (fast if Manifest unchanged)
-echo "  Syncing Julia packages..."
-julia --project=JuliaLang -e 'using Pkg; Pkg.instantiate(); println("  Packages OK")'
+run_as_tom "git config --global --add safe.directory /opt/srnn-repo && cd /opt/srnn-repo && git pull --ff-only" || echo "WARNING: git pull failed, using baked-in version"
+echo "  Commit: $(cd /opt/srnn-repo && git rev-parse --short HEAD)"
 
 # ── Step 2: Download dataset from GCS ──────────────────────────────
 echo ""
 echo "=== Step 2: Downloading dataset '${EXPERIMENT}' ==="
-DATASET_DIR="JuliaLang/data/${EXPERIMENT}"
+DATASET_DIR="/opt/srnn-repo/JuliaLang/data/${EXPERIMENT}"
 mkdir -p "${DATASET_DIR}"
+chown -R tom:tom "${DATASET_DIR}"
 gsutil -m cp -r "${GCS_BUCKET}/datasets/${EXPERIMENT}/*" "${DATASET_DIR}/" 2>&1
+chown -R tom:tom "${DATASET_DIR}"
 echo "  Downloaded to ${DATASET_DIR}"
 ls -lh "${DATASET_DIR}/"
 
@@ -73,10 +77,12 @@ echo "=== Step 3: Checking for existing checkpoint ==="
 CHECKPOINT_GCS="${GCS_BUCKET}/checkpoints/${MODEL}-${EXPERIMENT}-seed${SEED}"
 RESUME_FLAG=""
 mkdir -p "${CHECKPOINT_DIR}"
+chmod 777 "${CHECKPOINT_DIR}"
 
 if gsutil -q stat "${CHECKPOINT_GCS}/latest.jld2" 2>/dev/null; then
     echo "  Found existing checkpoint — downloading for resume"
     gsutil cp "${CHECKPOINT_GCS}/latest.jld2" "${CHECKPOINT_DIR}/resume.jld2"
+    chmod 666 "${CHECKPOINT_DIR}/resume.jld2"
     RESUME_FLAG="--resume ${CHECKPOINT_DIR}/resume.jld2"
     echo "  Resume flag: ${RESUME_FLAG}"
 else
@@ -86,16 +92,13 @@ fi
 # ── Step 4: Run training ───────────────────────────────────────────
 echo ""
 echo "=== Step 4: Starting training ==="
-echo "  Command: julia --project=JuliaLang ${TRAIN_SCRIPT} --seed ${SEED} --save ${CHECKPOINT_DIR} ${TRAIN_ARGS} ${RESUME_FLAG}"
+JULIA_CMD="cd /opt/srnn-repo && julia --project=JuliaLang ${TRAIN_SCRIPT} --seed ${SEED} --save ${CHECKPOINT_DIR} ${TRAIN_ARGS} ${RESUME_FLAG}"
+echo "  Command: ${JULIA_CMD}"
 echo ""
 
 TRAIN_START=$(date +%s)
 
-julia --project=JuliaLang "${TRAIN_SCRIPT}" \
-    --seed "${SEED}" \
-    --save "${CHECKPOINT_DIR}" \
-    ${TRAIN_ARGS} \
-    ${RESUME_FLAG}
+run_as_tom "${JULIA_CMD}"
 
 TRAIN_EXIT=$?
 TRAIN_END=$(date +%s)
