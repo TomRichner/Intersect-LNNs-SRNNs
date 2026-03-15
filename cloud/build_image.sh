@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.env"
 
 BUILDER_VM="julia-image-builder"
-IMAGE_NAME="srnn-julia-v1"
+IMAGE_NAME="srnn-julia-v2"
 BOOT_DISK_SIZE="30GB"
 
 echo "=== Building Julia VM Image ==="
@@ -33,7 +33,7 @@ echo "Step 1: Creating builder VM '${BUILDER_VM}'..."
 gcloud compute instances create "${BUILDER_VM}" \
     --project="${GCP_PROJECT}" \
     --zone="${GCP_ZONE}" \
-    --machine-type=e2-standard-4 \
+    --machine-type=n4d-standard-4 \
     --image-family=debian-12 \
     --image-project=debian-cloud \
     --boot-disk-size="${BOOT_DISK_SIZE}" \
@@ -75,7 +75,7 @@ julia --project=JuliaLang -e '
 
 echo '--- Verifying key packages ---'
 julia --project=JuliaLang -e '
-    using Lux, Zygote, Optimisers, NNlib, JLD2
+    using Lux, Zygote, Optimisers, NNlib, JLD2, CSV, DataFrames
     println(\"Key packages load OK.\")
 '
 
