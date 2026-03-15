@@ -60,26 +60,26 @@ From Hasani et al. 2021, we need to reproduce the following. All reported as
 
 | # | Experiment   | Task Type      | Metric   | Seq Len | Features | Classes/Out | VM Size         |
 |---|-------------|----------------|----------|---------|----------|-------------|-----------------|
-| 1 | HAR          | Classification | Accuracy | 16      | 561      | 6           | e2-highmem-2    |
-| 2 | Gesture      | Classification | Accuracy | 32      | varies   | 5           | e2-highmem-2    |
-| 3 | Occupancy    | Classification | Accuracy | 16      | 5        | 2           | e2-highmem-2    |
-| 4 | SMnist       | Classification | Accuracy | 784     | 1        | 10          | e2-highmem-4    |
-| 5 | Traffic      | Regression     | MSE      | 32      | varies   | 1           | e2-highmem-2    |
-| 6 | Power        | Regression     | MSE      | 32      | varies   | 1           | e2-highmem-2    |
-| 7 | Ozone        | Classification | F1-score | 32      | 72       | 2           | e2-highmem-2    |
+| 1 | HAR          | Classification | Accuracy | 16      | 561      | 6           | n4-highmem-2    |
+| 2 | Gesture      | Classification | Accuracy | 32      | 32       | 5           | n4-highmem-2    |
+| 3 | Occupancy    | Classification | Accuracy | 16      | 5        | 2           | n4-highmem-2    |
+| 4 | SMnist       | Classification | Accuracy | 784     | 1        | 10          | n4-highmem-4    |
+| 5 | Traffic      | Regression     | MSE      | 32      | varies   | 1           | n4-highmem-2    |
+| 6 | Power        | Regression     | MSE      | 32      | varies   | 1           | n4-highmem-2    |
+| 7 | Ozone        | Classification | F1-score | 32      | 72       | 2           | n4-highmem-2    |
 
 ### Tables 4, 5 — Person Activity
 
 | # | Experiment   | Task Type      | Metric   | Setting | VM Size         |
 |---|-------------|----------------|----------|---------|-----------------|
-| 8 | Person (1st) | Classification | Accuracy | Standard| e2-highmem-2    |
-| 9 | Person (2nd) | Classification | Accuracy | Rubanova| e2-highmem-2    |
+| 8 | Person (1st) | Classification | Accuracy | Standard| n4-highmem-2    |
+| 9 | Person (2nd) | Classification | Accuracy | Rubanova| n4-highmem-2    |
 
 ### Table 6 — Half-Cheetah
 
 | #  | Experiment   | Task Type  | Metric | VM Size         |
 |----|-------------|------------|--------|-----------------|
-| 10 | Cheetah      | Regression | MSE    | e2-highmem-2    |
+| 10 | Cheetah      | Regression | MSE    | n4-highmem-2    |
 
 ### Total Runs
 
@@ -116,15 +116,15 @@ Intersect-LNNs-SRNNs/
 │       └── cheetah.env
 ├── JuliaLang/
 │   ├── scripts/
-│   │   ├── train_har_srnn.jl     ← already done ✅
-│   │   ├── train_gesture_srnn.jl ← TODO
-│   │   ├── train_occupancy_srnn.jl ← TODO
-│   │   ├── train_smnist_srnn.jl  ← TODO
-│   │   ├── train_traffic_srnn.jl ← TODO
-│   │   ├── train_power_srnn.jl   ← TODO
-│   │   ├── train_ozone_srnn.jl   ← TODO
-│   │   ├── train_person_srnn.jl  ← TODO
-│   │   └── train_cheetah_srnn.jl ← TODO
+│   │   ├── train_har_srnn.jl       ← ✅ done + cloud tested
+│   │   ├── train_gesture_srnn.jl   ← ✅ done, locally verified
+│   │   ├── train_occupancy_srnn.jl ← ✅ done, locally verified
+│   │   ├── train_smnist_srnn.jl    ← TODO
+│   │   ├── train_traffic_srnn.jl   ← TODO (first regression task)
+│   │   ├── train_power_srnn.jl     ← TODO
+│   │   ├── train_ozone_srnn.jl     ← TODO
+│   │   ├── train_person_srnn.jl    ← TODO
+│   │   └── train_cheetah_srnn.jl   ← TODO
 │   └── ...
 └── ...
 ```
@@ -186,9 +186,9 @@ the same pattern as `train_har_srnn.jl`:
 
 | Script | Status | Key Differences from HAR |
 |--------|--------|--------------------------|
-| `train_har_srnn.jl` | ✅ Done | — |
-| `train_gesture_srnn.jl` | TODO | Different data loader (per-file traces), seq_len=32 |
-| `train_occupancy_srnn.jl` | TODO | Binary classification, 5 features, two test sets |
+| `train_har_srnn.jl` | ✅ Done | Baseline script with --seed, checkpointing, batched BPTT |
+| `train_gesture_srnn.jl` | ✅ Done | 7 CSV files, interleaved windowing, seq_len=32, 5 classes, 3-way split |
+| `train_occupancy_srnn.jl` | ✅ Done | CSV.jl data loader, z-score norm, 5 features, 2 classes, two test sets |
 | `train_smnist_srnn.jl` | TODO | Very long sequences (784), pixel-by-pixel input |
 | `train_traffic_srnn.jl` | TODO | Regression (MSE loss), seq_len=32 |
 | `train_power_srnn.jl` | TODO | Regression (MSE loss), seq_len=32 |
@@ -303,19 +303,20 @@ gs://srnn-experiments/
 
 ## VM Types Reference
 
-| Machine Type    | vCPUs | RAM (GB) | $/hr (standard) | $/hr (Spot) | Use Case |
-|----------------|-------|----------|-----------------|-------------|----------|
-| **e2-highmem-2** | 2   | 16       | $0.090          | ~$0.027     | **Default — all experiments** |
-| e2-highmem-4    | 4    | 32       | $0.181          | ~$0.054     | SMnist (if 16 GB OOMs) |
-| e2-standard-4   | 4    | 16       | $0.134          | ~$0.040     | Not recommended (same RAM, costs more) |
-| e2-highmem-8    | 8    | 64       | $0.362          | ~$0.109     | If 32 GB isn't enough |
+| Machine Type    | vCPUs | RAM (GB) | CPU | $/hr (standard) | Use Case |
+|----------------|-------|----------|-----|-----------------|----------|
+| **n4-highmem-2** | 2   | 16       | Intel Emerald Rapids (5th gen Xeon) | ~$0.12 | **Default — all experiments** |
+| n4-highmem-4    | 4    | 32       | Intel Emerald Rapids | ~$0.24 | SMnist (long sequences) |
 
-> **Why e2-highmem-2?** Julia's Zygote BPTT is single-threaded — extra CPUs are
-> wasted. RAM is the bottleneck (~9 GB observed for HAR). The highmem-2 gives
-> 16 GB RAM with only 2 vCPUs, which is 33% cheaper than e2-standard-4.
+> **Why n4-highmem-2?** Julia's Zygote BPTT is single-threaded — extra CPUs are
+> wasted. N4 has ~2× single-core performance vs E2 (Intel Emerald Rapids vs shared-core).
+> RAM usage observed: ~1.8 GB for HAR (32 neurons), so 16 GB is plenty.
 
-> **vCPU Quota:** Project has a 64 vCPU quota. With e2-highmem-2 (2 vCPU each),
-> we can run **32 concurrent VMs** vs only 16 with e2-standard-4.
+> **Why not Spot?** First-epoch JIT compilation takes 15-25 min. Spot preemptions
+> during JIT waste the entire compilation. Standard VMs are more reliable.
+
+> **vCPU Quota:** Project has a 64 global vCPU quota (binding), 200 regional (us-central1).
+> With n4-highmem-2 (2 vCPU each), we can run **32 concurrent VMs**.
 
 ---
 
@@ -484,40 +485,47 @@ Scripts created:
 | `cloud/launch_batch.sh` | Launches N_SEEDS VMs for an experiment (calls launch_run.sh in a loop) |
 | `cloud/monitor.sh` | Shows vCPU quota usage, running VMs, and per-seed result status from GCS |
 
-**Important:** The `--seed` flag is not yet implemented in `train_har_srnn.jl`.
-This needs to be added before running cloud experiments (set RNG seed for reproducibility).
-
-**Verified:** `monitor.sh` tested — shows quota (0/200 vCPUs), no running VMs,
-har results [0/5] not started.
+**Updates since initial creation:**
+- `--seed` flag added to `train_har_srnn.jl` — seeds both model init RNG and global RNG
+- `startup.sh` fixed: runs as root but uses `sudo -u tom -i` for Julia/git (package cache compatibility)
+- `stdbuf -oL` added to startup.sh for line-buffered Julia output
+- `monitor.sh` shows both global (64) and regional (200) vCPU quotas
+- Switched from Spot to standard VMs (Spot preemptions during JIT compilation)
+- Switched from e2-highmem-2 to **n4-highmem-2** (~2× single-core performance)
 
 - [x] Done (2025-03-15)
 
-### Step 5: Smoke test with one HAR cloud run
+### Step 5: Smoke test with one HAR cloud run ⏳
 
-Before launching 50+ runs, validate the entire pipeline end-to-end:
+Smoke test with `--epochs 3` on non-preemptible e2-highmem-2 (launched before n4 switch).
 
-```bash
-# 5a. Launch a single HAR run with a small epoch count
-#     (temporarily edit har.env to --epochs 3 for testing)
-./cloud/launch_run.sh har srnn 1
+**Progress:**
+- [x] VM booted and ran startup.sh correctly (root→tom user context fixed)
+- [x] git pull, data download (269.5 MiB) worked  
+- [x] Julia started training with **no recompilation** (pre-compiled packages found)
+- [x] Gradient smoke test passed (initial loss 1.56, expected ~1.79)
+- [x] Epoch 0 completed: train acc 41.1%, valid acc 13.8%
+- [x] Best checkpoint saved at epoch 1 (valid acc 29.9%)
+- [ ] Waiting for epochs 1-2 to complete (stdout buffered — stdbuf fix is in for next run)
+- [ ] Results uploaded to GCS
+- [ ] VM self-deleted
 
-# 5b. Monitor the VM (watch startup log)
-gcloud compute ssh srnn-har-seed1 --zone=us-central1-a --command='tail -f /tmp/training.log'
+**Key findings:**
+- First-epoch JIT compilation takes ~30 min on e2-highmem-2 (single-threaded)
+- RAM usage: ~1.8 GB RSS (well within 16 GB)
+- CPU: 98% of one core (single-threaded Zygote BPTT confirmed)
+- Spot VM was preempted during first attempt — switched to standard VMs
 
-# 5c. After completion, check results landed in GCS
-gsutil ls gs://liquidneuralnets-experiments/results/srnn/har/seed1/
+### Step 6: Write remaining training scripts
 
-# 5d. Check the VM self-deleted
-gcloud compute instances list
-
-# 5e. If everything works, restore har.env to --epochs 200
-#     and launch the full batch:
-./cloud/launch_batch.sh har srnn
-```
-
-**Verification:**
-- [ ] VM booted and started training within ~2 min
-- [ ] Training log visible
-- [ ] Results appeared in GCS after training
-- [ ] VM self-deleted after completion
-- [ ] Done
+| Script | Status | Verified Locally |
+|--------|--------|------------------|
+| `train_har_srnn.jl` | ✅ | ✅ + cloud tested |
+| `train_occupancy_srnn.jl` | ✅ | ✅ (loss 0.68, expected ~0.69) |
+| `train_gesture_srnn.jl` | ✅ | ✅ (loss 1.43, expected ~1.61) |
+| `train_traffic_srnn.jl` | TODO | Next (first regression task) |
+| `train_power_srnn.jl` | TODO | |
+| `train_ozone_srnn.jl` | TODO | |
+| `train_smnist_srnn.jl` | TODO | |
+| `train_person_srnn.jl` | TODO | |
+| `train_cheetah_srnn.jl` | TODO | |
