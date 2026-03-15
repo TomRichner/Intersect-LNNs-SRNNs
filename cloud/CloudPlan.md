@@ -376,3 +376,229 @@ Phase 5: Collect & Analyze
 - Each script should write a `final_metrics.json` with the final test metric for easy collection
 - The startup script should capture stdout/stderr to a log file and upload it to GCS
 - Consider adding `--save_to_gcs` flag to training scripts for direct GCS checkpoint upload
+
+---
+
+## Next 5 Steps (Concrete)
+
+**GCP Project ID:** `liquidneuralnets` (project number: `1042969478371`)
+
+### Step 1: Configure local environment and enable GCP APIs ✅
+
+Create `config.env` from the template and set the active project:
+
+```bash
+# 1a. Set gcloud to use our new project
+gcloud config set project liquidneuralnets
+
+# 1b. Verify it's set
+gcloud config get-value project
+# Expected output: liquidneuralnets
+
+# 1c. Enable required APIs
+gcloud services enable compute.googleapis.com storage.googleapis.com
+
+# 1d. Create config.env from the template
+cp cloud/config.env.example cloud/config.env
+# Then edit cloud/config.env to set:
+#   GCP_PROJECT=liquidneuralnets
+```
+
+**Verification:** `gcloud services list --enabled` should show both Compute Engine
+and Cloud Storage in the list.
+
+- [x] Done (2025-03-15)
+
+### Step 2: Create GCS bucket and upload datasets (`setup_gcs.sh`) ✅
+
+Write and run `cloud/setup_gcs.sh`:
+
+```bash
+# 2a. Create the bucket (us-central1 for cheapest compute)
+gcloud storage buckets create gs://liquidneuralnets-experiments \
+    --location=us-central1 \
+    --uniform-bucket-level-access
+
+# 2b. Upload datasets from the existing Python repo
+#     Source: liquid_time_constant_networks/experiments_with_ltcs/data/
+gsutil -m cp -r <dataset_dirs> gs://liquidneuralnets-experiments/datasets/
+
+# 2c. Verify
+gsutil ls gs://liquidneuralnets-experiments/datasets/
+```
+
+Total uploaded: **431.3 MiB** across 8 datasets (cheetah, gesture, har, occupancy,
+ozone, person, power, traffic). SMnist uses keras download (handled in training script).
+
+**Verification:** All 8 dataset directories present in bucket.
+
+- [x] Done (2025-03-15)
+
+### Step 3: Build a custom Julia VM image (`build_image.sh`)
+
+Write and run `cloud/build_image.sh`. This creates a reusable disk image
+with Julia 1.11.4 + all packages pre-compiled so each experiment VM boots
+in ~60 seconds instead of ~15 minutes:
+
+```bash
+# 3a. Create a temporary VM from a base image
+gcloud compute instances create julia-image-builder \
+    --zone=us-central1-a \
+    --machine-type=e2-standard-4 \
+    --image-family=debian-12 \
+    --image-project=debian-cloud \
+    --boot-disk-size=30GB
+
+# 3b. SSH in and install Julia + packages
+gcloud compute ssh julia-image-builder --zone=us-central1-a --command='
+    # Install Julia
+    wget -q https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.4-linux-x86_64.tar.gz
+    sudo tar -xzf julia-1.11.4-linux-x86_64.tar.gz -C /opt/
+    sudo ln -s /opt/julia-1.11.4/bin/julia /usr/local/bin/julia
+    rm julia-1.11.4-linux-x86_64.tar.gz
+
+    # Install git, build deps
+    sudo apt-get update && sudo apt-get install -y git build-essential
+
+    # Clone repo and precompile Julia packages
+    git clone https://github.com/TomRichner/Intersect-LNNs-SRNNs.git /opt/srnn-repo
+    cd /opt/srnn-repo
+    julia --project=JuliaLang -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
+'
+
+# 3c. Stop the VM (required before creating image)
+gcloud compute instances stop julia-image-builder --zone=us-central1-a
+
+# 3d. Create image from the disk
+gcloud compute images create srnn-julia-v1 \
+    --source-disk=julia-image-builder \
+    --source-disk-zone=us-central1-a \
+    --family=srnn-julia
+
+# 3e. Delete the temporary VM
+gcloud compute instances delete julia-image-builder --zone=us-central1-a --quiet
+```
+
+**Verification:** `gcloud compute images list --filter="family=srnn-julia"` shows
+`srnn-julia-v1`.
+
+- [ ] Done
+
+### Step 4: Write the VM startup script (`startup.sh`) and launch script (`launch_run.sh`)
+
+Write `cloud/startup.sh` — the script that runs inside each VM on boot:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Read VM metadata (set by launch_run.sh)
+EXPERIMENT=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/experiment" -H "Metadata-Flavor: Google")
+MODEL=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/model" -H "Metadata-Flavor: Google")
+SEED=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/seed" -H "Metadata-Flavor: Google")
+TRAIN_ARGS=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/train-args" -H "Metadata-Flavor: Google")
+GCS_BUCKET=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket" -H "Metadata-Flavor: Google")
+VM_NAME=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/name" -H "Metadata-Flavor: Google")
+VM_ZONE=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/zone" -H "Metadata-Flavor: Google" | awk -F/ '{print $NF}')
+
+RESULT_PATH="${GCS_BUCKET}/results/${MODEL}/${EXPERIMENT}/seed${SEED}"
+LOG_FILE="/tmp/training.log"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "=== Starting ${MODEL}-${EXPERIMENT}-seed${SEED} at $(date) ==="
+
+# 1. Pull latest code
+cd /opt/srnn-repo && git pull
+
+# 2. Download dataset
+mkdir -p JuliaLang/data/${EXPERIMENT}
+gsutil -m cp -r "${GCS_BUCKET}/datasets/${EXPERIMENT}/*" "JuliaLang/data/${EXPERIMENT}/"
+
+# 3. Check for existing checkpoint (Spot VM resume)
+CHECKPOINT_PATH="${GCS_BUCKET}/checkpoints/${MODEL}-${EXPERIMENT}-seed${SEED}/latest.jld2"
+RESUME_FLAG=""
+if gsutil -q stat "$CHECKPOINT_PATH" 2>/dev/null; then
+    gsutil cp "$CHECKPOINT_PATH" /tmp/resume_checkpoint.jld2
+    RESUME_FLAG="--resume /tmp/resume_checkpoint.jld2"
+fi
+
+# 4. Run training
+julia --project=JuliaLang "JuliaLang/scripts/train_${EXPERIMENT}_srnn.jl" \
+    --seed $SEED \
+    --save /tmp/checkpoints \
+    $TRAIN_ARGS \
+    $RESUME_FLAG
+
+# 5. Upload results
+gsutil cp "$LOG_FILE" "${RESULT_PATH}/training_log.txt"
+gsutil cp /tmp/checkpoints/*best* "${RESULT_PATH}/" 2>/dev/null || true
+gsutil cp /tmp/checkpoints/final_metrics.json "${RESULT_PATH}/" 2>/dev/null || true
+
+echo "=== Completed at $(date) ==="
+gsutil cp "$LOG_FILE" "${RESULT_PATH}/training_log.txt"
+
+# 6. Self-delete
+gcloud compute instances delete "$VM_NAME" --zone="$VM_ZONE" --quiet
+```
+
+Write `cloud/launch_run.sh`:
+
+```bash
+#!/bin/bash
+# Usage: ./cloud/launch_run.sh <experiment> <model> <seed>
+# Example: ./cloud/launch_run.sh har srnn 1
+source cloud/config.env
+source "cloud/experiments/$1.env"
+MODEL=${2:-srnn}
+SEED=${3:-1}
+
+VM_NAME="${MODEL}-${EXPERIMENT_NAME}-seed${SEED}"
+
+gcloud compute instances create "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --machine-type="${MACHINE_TYPE:-$GCP_MACHINE_TYPE}" \
+    --image-family="$GCP_IMAGE_FAMILY" \
+    ${GCP_USE_SPOT:+--provisioning-model=SPOT --instance-termination-action=STOP} \
+    --metadata=experiment=${EXPERIMENT_NAME},model=${MODEL},seed=${SEED},train-args="${ARGS}",gcs-bucket="${GCS_BUCKET}" \
+    --metadata-from-file=startup-script=cloud/startup.sh \
+    --scopes=storage-full
+
+echo "Launched: $VM_NAME"
+```
+
+**Verification:** Run a dry-run test:
+`./cloud/launch_run.sh har srnn 1` → check VM appears in
+`gcloud compute instances list`.
+
+- [ ] Done
+
+### Step 5: Smoke test with one HAR cloud run
+
+Before launching 50+ runs, validate the entire pipeline end-to-end:
+
+```bash
+# 5a. Launch a single HAR run with a small epoch count
+#     (temporarily edit har.env to --epochs 3 for testing)
+./cloud/launch_run.sh har srnn 1
+
+# 5b. Monitor the VM (watch startup log)
+gcloud compute ssh srnn-har-seed1 --zone=us-central1-a --command='tail -f /tmp/training.log'
+
+# 5c. After completion, check results landed in GCS
+gsutil ls gs://liquidneuralnets-experiments/results/srnn/har/seed1/
+
+# 5d. Check the VM self-deleted
+gcloud compute instances list
+
+# 5e. If everything works, restore har.env to --epochs 200
+#     and launch the full batch:
+./cloud/launch_batch.sh har srnn
+```
+
+**Verification:**
+- [ ] VM booted and started training within ~2 min
+- [ ] Training log visible
+- [ ] Results appeared in GCS after training
+- [ ] VM self-deleted after completion
+- [ ] Done
