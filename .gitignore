@@ -1,6 +1,12 @@
 # Data (downloaded datasets — not committed)
 **/data/
 
+# Cloud config (project-specific, not secret but not committed)
+cloud/config.env
+
+# Checkpoints (large binary files)
+**/checkpoints/*.jld2
+
 **/figs/
 
 # OS
