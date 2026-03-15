@@ -17,6 +17,7 @@
 #   --per_neuron        Per-neuron dynamics params (default: shared scalars)
 #
 # Checkpoint flags:
+#   --seed <int>       Random seed for reproducibility (default: 42)
 #   --save <dir>       Checkpoint directory (default: checkpoints/)
 #   --resume <path>    Resume from checkpoint file
 #   --save_every <int> Save periodic checkpoint every N epochs (default: 5)
@@ -48,6 +49,7 @@ function parse_args()
     readout_mode = :synaptic
     solver = :semi_implicit
     per_neuron = false
+    seed = 42
     save_dir = joinpath(@__DIR__, "..", "checkpoints")
     resume_path = ""
     save_every = 5
@@ -78,6 +80,8 @@ function parse_args()
             solver = Symbol(ARGS[i+1])
         elseif ARGS[i] == "--per_neuron"
             per_neuron = true
+        elseif ARGS[i] == "--seed" && i < length(ARGS)
+            seed = parse(Int, ARGS[i+1])
         elseif ARGS[i] == "--save" && i < length(ARGS)
             save_dir = ARGS[i+1]
         elseif ARGS[i] == "--resume" && i < length(ARGS)
@@ -95,7 +99,7 @@ function parse_args()
     end
 
     return (; epochs, model_size, lr, batch_size, n_E, n_a, n_b,
-              unfolds, h, readout_mode, solver, per_neuron,
+              unfolds, h, readout_mode, solver, per_neuron, seed,
               save_dir, resume_path, save_every, warmup_epochs)
 end
 
@@ -461,7 +465,10 @@ function main()
         println("  Resuming from: $(args.resume_path)")
     end
 
-    rng = MersenneTwister(42)
+    # Seed global RNG (for batch shuffling) and create model init RNG
+    Random.seed!(args.seed)
+    rng = MersenneTwister(args.seed)
+    println("  Random seed: $(args.seed)")
 
     # Load data
     data = load_har_data()
