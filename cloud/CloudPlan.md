@@ -121,10 +121,10 @@ Intersect-LNNs-SRNNs/
 │   │   ├── train_occupancy_srnn.jl ← ✅ done, locally verified
 │   │   ├── train_smnist_srnn.jl    ← ✅ done, locally verified
 │   │   ├── train_traffic_srnn.jl   ← ✅ done, locally verified (first regression task, bs=64)
-│   │   ├── train_power_srnn.jl     ← TODO
+│   │   ├── train_power_srnn.jl     ← ✅ done, locally verified (regression, MSE/MAE)
 │   │   ├── train_ozone_srnn.jl     ← ✅ done, locally verified (F1 metric, weighted CE)
-│   │   ├── train_person_srnn.jl    ← TODO
-│   │   └── train_cheetah_srnn.jl   ← TODO
+│   │   ├── train_person_srnn.jl    ← ✅ done, locally verified (per-timestep classification, bs=16)
+│   │   └── train_cheetah_srnn.jl   ← ✅ done, locally verified (vector autoregression, NPZ.jl)
 │   └── ...
 └── ...
 ```
@@ -194,7 +194,7 @@ the same pattern as `train_har_srnn.jl`:
 | `train_power_srnn.jl` | TODO | Regression (MSE loss), seq_len=32 |
 | `train_ozone_srnn.jl` | TODO | Binary classification, F1 metric, 72 features |
 | `train_person_srnn.jl` | TODO | Two settings (standard + Rubanova), bs=64 |
-| `train_cheetah_srnn.jl` | TODO | Autoregressive regression, MuJoCo rollouts |
+| `train_cheetah_srnn.jl` | ✅ Done | Autoregressive regression (17→17), MuJoCo rollouts, NPZ.jl for .npy loading |
 
 ### Phase 3 — Launch & Monitor
 
@@ -528,4 +528,4 @@ Smoke test with `--epochs 3` on non-preemptible e2-highmem-2 (launched before n4
 | `train_ozone_srnn.jl` | TODO | |
 | `train_smnist_srnn.jl` | TODO | |
 | `train_person_srnn.jl` | TODO | |
-| `train_cheetah_srnn.jl` | TODO | |
+| `train_cheetah_srnn.jl` | ✅ | ✅ (MSE 18.5→4.2 in 2 epochs) |
