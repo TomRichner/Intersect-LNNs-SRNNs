@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.env"
 
 BUILDER_VM="julia-image-builder"
-IMAGE_NAME="srnn-julia-v2"
+IMAGE_NAME="srnn-julia-v3"
 BOOT_DISK_SIZE="30GB"
 
 echo "=== Building Julia VM Image ==="
@@ -75,7 +75,7 @@ julia --project=JuliaLang -e '
 
 echo '--- Verifying key packages ---'
 julia --project=JuliaLang -e '
-    using Lux, Zygote, Optimisers, NNlib, JLD2, CSV, DataFrames
+    using Lux, Zygote, Optimisers, NNlib, JLD2, CSV, DataFrames, NPZ
     println(\"Key packages load OK.\")
 '
 
