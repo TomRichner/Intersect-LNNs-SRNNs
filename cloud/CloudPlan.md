@@ -207,6 +207,22 @@ Each script is identical for all models — only the `--model` flag changes.
 
 Old `train_*_srnn.jl` scripts are preserved for reference.
 
+#### SRNN-specific flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--n_a_E` | 3 | SFA timescale count, E neurons (0 = no SFA) |
+| `--n_a_I` | 0 | SFA timescale count, I neurons |
+| `--n_b_E` | 1 | STD timescale count, E neurons (0 = no STD) |
+| `--n_b_I` | 0 | STD timescale count, I neurons |
+| `--dales` | off | Dale's law enforcement via softplus (E columns ≥ 0, I columns ≤ 0) |
+| `--per_neuron` | off | Per-neuron dynamics params (τ_d, c, a_0, tau endpoints) |
+
+When `--dales` is enabled, W is initialized from `connectivity.jl` (`generate_rmt_matrix`)
+and sign constraints are enforced via softplus parameterization in the forward pass.
+
+When `n_a_E=1`, a single `log_tau_a_E` is used instead of the lo/hi range.
+
 ### Phase 3 — Launch & Monitor
 
 All commands require a **run name** as the first argument. This scopes VM names,
