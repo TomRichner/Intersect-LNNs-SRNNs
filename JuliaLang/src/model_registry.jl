@@ -26,6 +26,7 @@ function build_cell(model::String, n::Int, n_in::Int, args, rng)
             readout=args.readout_mode,
             solver=args.solver,
             per_neuron=args.per_neuron,
+            dales=args.dales,
         )
         ps_cell, st_cell = Lux.setup(rng, cell)
         return cell, ps_cell, st_cell

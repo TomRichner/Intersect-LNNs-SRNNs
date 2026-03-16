@@ -55,6 +55,7 @@ function parse_args()
     readout_mode = :synaptic
     solver = :semi_implicit
     per_neuron = false
+    dales = false
     seed = 42
     save_dir = joinpath(@__DIR__, "..", "checkpoints")
     resume_path = ""
@@ -88,6 +89,8 @@ function parse_args()
             solver = Symbol(ARGS[i+1])
         elseif ARGS[i] == "--per_neuron"
             per_neuron = true
+        elseif ARGS[i] == "--dales"
+            dales = true
         elseif ARGS[i] == "--seed" && i < length(ARGS)
             seed = parse(Int, ARGS[i+1])
         elseif ARGS[i] == "--save" && i < length(ARGS)
@@ -111,7 +114,7 @@ function parse_args()
     end
 
     return (; model, epochs, model_size, lr, batch_size, n_E, n_a, n_b,
-              unfolds, h, readout_mode, solver, per_neuron, seed,
+              unfolds, h, readout_mode, solver, per_neuron, dales, seed,
               save_dir, resume_path, save_every, warmup_epochs)
 end
 

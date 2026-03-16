@@ -13,6 +13,7 @@
 using Lux, Random, NNlib, Zygote
 
 include(joinpath(@__DIR__, "..", "activations.jl"))
+include(joinpath(@__DIR__, "..", "connectivity.jl"))
 
 # ═══════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -36,6 +37,17 @@ function _make_tau_range(lo, hi, n_steps::Int)
         Float32.([(i - 1) / (n_steps - 1) for i in 1:n_steps])'   # (1, n_steps)
     end
     return lo .+ (hi .- lo) .* t   # (1, n_steps) or (n, n_steps)
+end
+
+"""
+    _apply_dales(W, n_E) → W_eff
+
+Enforce Dale's law via softplus parameterization:
+  E columns (1:n_E):     softplus(W) ≥ 0
+  I columns (n_E+1:end): -softplus(W) ≤ 0
+"""
+function _apply_dales(W, n_E)
+    hcat(NNlib.softplus.(W[:, 1:n_E]), .-NNlib.softplus.(W[:, n_E+1:end]))
 end
 
 # ── State unpacking ─────────────────────────────────────────────────────
@@ -206,17 +218,19 @@ struct SRNN_ODE{F} <: Lux.AbstractLuxLayer
     activation::F
     state_dim::Int
     per_neuron::Bool
+    dales::Bool
 end
 
 function SRNN_ODE(n::Int, n_in::Int, n_E::Int;
     n_a_E::Int=0, n_a_I::Int=0,
     n_b_E::Int=0, n_b_I::Int=0,
     per_neuron::Bool=false,
+    dales::Bool=false,
     activation=make_piecewise_sigmoid(S_c=0.0))
     n_I = n - n_E
     state_dim = n_E * n_a_E + n_I * n_a_I + n_E * n_b_E + n_I * n_b_I + n
     return SRNN_ODE(n, n_in, n_E, n_I, n_a_E, n_a_I, n_b_E, n_b_I,
-        activation, state_dim, per_neuron)
+        activation, state_dim, per_neuron, dales)
 end
 
 function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
@@ -230,8 +244,21 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
     # Inverse softplus: log(exp(x) - 1), so that softplus(result) = x
     _inv_sp(x) = Float32(log(exp(x) - 1))
 
+    # W initialization: Dale's law or standard He-init
+    if layer.dales
+        W_init, _, _, _ = generate_rmt_matrix(n, n, Float64(n_E / n);
+            level_of_chaos=1.0, rng=rng)
+        # Apply inv_softplus so that softplus(W_raw) ≈ |W_init|
+        W_abs = abs.(W_init)
+        W_raw = Float32.(log.(exp.(W_abs) .- 1.0))  # inv_softplus
+        # Clamp extreme values (inv_softplus diverges near 0)
+        W_raw = clamp.(W_raw, -10.0f0, 10.0f0)
+    else
+        W_raw = σ_w .* randn(rng, Float32, n, n)
+    end
+
     ps = Dict{Symbol,Any}(
-        :W => σ_w .* randn(rng, Float32, n, n),
+        :W => W_raw,
         :W_in => Float32(0.1) .* randn(rng, Float32, n, n_in),
         :a_0 => _s_or_v(0.35, n),               # MATLAB: S_c = 0.35
         :log_tau_d => _s_or_v(_inv_sp(0.1), n),        # τ_d = 0.1s
@@ -297,8 +324,9 @@ function (layer::SRNN_ODE)(S::AbstractVector, ps, st)
     br = b .* r
 
     # Compute derivatives
+    W_eff = layer.dales ? _apply_dales(ps.W, n_E) : ps.W
     τ_d = NNlib.softplus.(ps.log_tau_d)
-    dx_dt = (-x .+ ps.W * br .+ u) ./ τ_d
+    dx_dt = (-x .+ W_eff * br .+ u) ./ τ_d
 
     # Adaptation derivatives
     da_E_dt = if n_a_E > 0 && !isnothing(parts.a_E)
@@ -364,8 +392,9 @@ function (layer::SRNN_ODE)(S::AbstractMatrix, ps, st)
     br = b .* r
 
     # Compute derivatives
+    W_eff = layer.dales ? _apply_dales(ps.W, n_E) : ps.W
     τ_d = NNlib.softplus.(ps.log_tau_d)    # (1,) or (n,)
-    dx_dt = (-x .+ ps.W * br .+ u) ./ τ_d
+    dx_dt = (-x .+ W_eff * br .+ u) ./ τ_d
 
     # Adaptation derivatives for E neurons
     da_E_dt = if n_a_E > 0 && !isnothing(parts.a_E)
@@ -477,8 +506,9 @@ end
 
 function SRNNCell(n::Int, n_in::Int, n_E::Int;
     ode_solver_unfolds::Int=4, h::Float32=Float32(1 / 400),
-    readout::Symbol=:synaptic, solver::Symbol=:semi_implicit, kwargs...)
-    ode = SRNN_ODE(n, n_in, n_E; kwargs...)
+    readout::Symbol=:synaptic, solver::Symbol=:semi_implicit,
+    dales::Bool=false, kwargs...)
+    ode = SRNN_ODE(n, n_in, n_E; dales=dales, kwargs...)
     SRNNCell(ode, ode_solver_unfolds, h, readout, solver)
 end
 
@@ -488,7 +518,7 @@ Lux.initialstates(rng::AbstractRNG, cell::SRNNCell) = Lux.initialstates(rng, cel
 
 # Property accessors for interface compatibility
 function Base.getproperty(c::SRNNCell, s::Symbol)
-    if s in (:n, :n_in, :n_E, :n_I, :n_a_E, :n_a_I, :n_b_E, :n_b_I, :state_dim, :per_neuron, :activation)
+    if s in (:n, :n_in, :n_E, :n_I, :n_a_E, :n_a_I, :n_b_E, :n_b_I, :state_dim, :per_neuron, :dales, :activation)
         return getfield(getfield(c, :ode), s)
     else
         return getfield(c, s)
@@ -558,9 +588,10 @@ function _fused_srnn_step(layer::SRNN_ODE, S::AbstractVector, ps, st, Δt::Float
     br = b .* r
 
     # ── Fused x update (Eq 5): x_new = (x + α·drive) / (1 + α)  where α = Δt/τ_d
+    W_eff = layer.dales ? _apply_dales(ps.W, n_E) : ps.W
     τ_d = NNlib.softplus.(ps.log_tau_d)
     α_x = Δt ./ τ_d
-    x_new = (x .+ α_x .* (u .+ ps.W * br)) ./ (1.0f0 .+ α_x)
+    x_new = (x .+ α_x .* (u .+ W_eff * br)) ./ (1.0f0 .+ α_x)
 
     # ── Fused a update (Eq 6): a_new = (a + (Δt/τ_a)·(c_0 + r)) / (1 + Δt/τ_a)
     a_E_new = if n_a_E > 0 && !isnothing(parts.a_E)
@@ -638,9 +669,10 @@ function _fused_srnn_step(layer::SRNN_ODE, S::AbstractMatrix, ps, st, Δt::Float
     br = b .* r
 
     # ── Fused x update
+    W_eff = layer.dales ? _apply_dales(ps.W, n_E) : ps.W
     τ_d = NNlib.softplus.(ps.log_tau_d)    # (1,) or (n,)
     α_x = Δt ./ τ_d
-    x_new = (x .+ α_x .* (u .+ ps.W * br)) ./ (1.0f0 .+ α_x)
+    x_new = (x .+ α_x .* (u .+ W_eff * br)) ./ (1.0f0 .+ α_x)
 
     # ── Fused a update (E neurons)
     a_E_new = if n_a_E > 0 && !isnothing(parts.a_E)

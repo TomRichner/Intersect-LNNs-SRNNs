@@ -36,9 +36,9 @@ include(joinpath(@__DIR__, "..", "src", "model_registry.jl"))
 include(joinpath(@__DIR__, "..", "src", "training_utils.jl"))
 
 # ── Configuration ───────────────────────────────────────────────────────
-const SEQ_LEN    = 32
+const SEQ_LEN = 32
 const N_FEATURES = 32     # 32 EMG sensor channels
-const N_CLASSES  = 5      # D, P, S, H, R
+const N_CLASSES = 5      # D, P, S, H, R
 
 const TRAINING_FILES = [
     "a3_va3.csv", "b1_va3.csv", "b3_va3.csv", "c1_va3.csv",
@@ -60,6 +60,7 @@ function parse_args()
     readout_mode = :synaptic
     solver = :semi_implicit
     per_neuron = false
+    dales = false
     seed = 42
     save_dir = joinpath(@__DIR__, "..", "checkpoints")
     resume_path = ""
@@ -93,6 +94,8 @@ function parse_args()
             solver = Symbol(ARGS[i+1])
         elseif ARGS[i] == "--per_neuron"
             per_neuron = true
+        elseif ARGS[i] == "--dales"
+            dales = true
         elseif ARGS[i] == "--seed" && i < length(ARGS)
             seed = parse(Int, ARGS[i+1])
         elseif ARGS[i] == "--save" && i < length(ARGS)
@@ -116,8 +119,8 @@ function parse_args()
     end
 
     return (; model, epochs, model_size, lr, batch_size, n_E, n_a, n_b,
-              unfolds, h, readout_mode, solver, per_neuron, seed,
-              save_dir, resume_path, save_every, warmup_epochs)
+        unfolds, h, readout_mode, solver, per_neuron, dales, seed,
+        save_dir, resume_path, save_every, warmup_epochs)
 end
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -147,12 +150,12 @@ Non-overlapping window cut with optional interleaved half-overlap copies.
 Returns a vector of (x_seq, y_seq) tuples.
 """
 function cut_in_sequences_gesture(x::Matrix{Float64}, y::Vector{Int}, seq_len::Int;
-                                   interleaved::Bool=false)
+    interleaved::Bool=false)
     n_samples = size(x, 1)
     num_sequences = n_samples ÷ seq_len
-    sequences = Tuple{Matrix{Float64}, Vector{Int}}[]
+    sequences = Tuple{Matrix{Float64},Vector{Int}}[]
 
-    for s in 0:(num_sequences - 1)
+    for s in 0:(num_sequences-1)
         start = s * seq_len + 1
         stop = start + seq_len - 1
         push!(sequences, (x[start:stop, :], y[start:stop]))
@@ -168,11 +171,11 @@ function cut_in_sequences_gesture(x::Matrix{Float64}, y::Vector{Int}, seq_len::I
 end
 
 struct GestureData
-    train_x::Array{Float32, 3}    # (features, seq_len, N_train)
+    train_x::Array{Float32,3}    # (features, seq_len, N_train)
     train_y::Matrix{Int}          # (seq_len, N_train)
-    valid_x::Array{Float32, 3}    # (features, seq_len, N_valid)
+    valid_x::Array{Float32,3}    # (features, seq_len, N_valid)
     valid_y::Matrix{Int}          # (seq_len, N_valid)
-    test_x::Array{Float32, 3}     # (features, seq_len, N_test)
+    test_x::Array{Float32,3}     # (features, seq_len, N_test)
     test_y::Matrix{Int}           # (seq_len, N_test)
 end
 
@@ -180,7 +183,7 @@ function load_gesture_data(; data_dir=joinpath(@__DIR__, "..", "data", "gesture"
     println("Loading Gesture data from: $data_dir")
 
     # Load and cut all training files
-    all_sequences = Tuple{Matrix{Float64}, Vector{Int}}[]
+    all_sequences = Tuple{Matrix{Float64},Vector{Int}}[]
     for f in TRAINING_FILES
         filepath = joinpath(data_dir, f)
         x, y = load_trace(filepath)
@@ -191,7 +194,7 @@ function load_gesture_data(; data_dir=joinpath(@__DIR__, "..", "data", "gesture"
 
     # Stack into 3D arrays: (features, seq_len, N_total) — matching our convention
     N_total = length(all_sequences)
-    all_x = Array{Float32, 3}(undef, N_FEATURES, SEQ_LEN, N_total)
+    all_x = Array{Float32,3}(undef, N_FEATURES, SEQ_LEN, N_total)
     all_y = Matrix{Int}(undef, SEQ_LEN, N_total)
     for (i, (sx, sy)) in enumerate(all_sequences)
         all_x[:, :, i] .= Float32.(sx')   # transpose: rows→features, cols→time
@@ -201,18 +204,18 @@ function load_gesture_data(; data_dir=joinpath(@__DIR__, "..", "data", "gesture"
     # Z-score normalize across all data
     flat_x = reshape(all_x, N_FEATURES, :)   # (features, seq_len * N_total)
     mean_x = mean(flat_x, dims=2)            # (features, 1)
-    std_x  = std(flat_x, dims=2)             # (features, 1)
-    all_x  = (all_x .- mean_x) ./ std_x
+    std_x = std(flat_x, dims=2)             # (features, 1)
+    all_x = (all_x .- mean_x) ./ std_x
 
     println("  Total sequences: $N_total")
 
     # 3-way split (matching Python: seed 23489, 10% valid, 15% test, 75% train)
     perm = randperm(MersenneTwister(23489), N_total)
     n_valid = div(N_total * 10, 100)   # 10%
-    n_test  = div(N_total * 15, 100)   # 15%
+    n_test = div(N_total * 15, 100)   # 15%
 
     valid_idx = perm[1:n_valid]
-    test_idx  = perm[n_valid+1:n_valid+n_test]
+    test_idx = perm[n_valid+1:n_valid+n_test]
     train_idx = perm[n_valid+n_test+1:end]
 
     println("  Split: $(length(train_idx)) train, $(length(valid_idx)) valid, $(length(test_idx)) test")
@@ -220,7 +223,7 @@ function load_gesture_data(; data_dir=joinpath(@__DIR__, "..", "data", "gesture"
     return GestureData(
         all_x[:, :, train_idx], all_y[:, train_idx],
         all_x[:, :, valid_idx], all_y[:, valid_idx],
-        all_x[:, :, test_idx],  all_y[:, test_idx],
+        all_x[:, :, test_idx], all_y[:, test_idx],
     )
 end
 
@@ -244,7 +247,7 @@ function forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
 
     for t in 1:size(x_batch, 2)
         u_t = @view x_batch[:, t, :]
-        st_d = merge(st_cell, (input = u_t,))
+        st_d = merge(st_cell, (input=u_t,))
         S, _ = cell(S, ps_cell, st_d)
     end
 
@@ -275,8 +278,8 @@ end
 # ═══════════════════════════════════════════════════════════════════════
 
 function evaluate(cell, head, ps_cell, ps_head, st_cell, st_head,
-                  data_x::Array{Float32, 3}, data_y::Matrix{Int};
-                  eval_batch_size::Int=128)
+    data_x::Array{Float32,3}, data_y::Matrix{Int};
+    eval_batch_size::Int=128)
     n = size(data_x, 3)
     total_loss = 0.0f0
     correct = 0
@@ -308,11 +311,11 @@ end
 function save_checkpoint(path, params, opt_state, epoch, best_valid_acc, args)
     mkpath(dirname(path))
     jldsave(path;
-        params = params,
-        opt_state = opt_state,
-        epoch = epoch,
-        best_valid_acc = best_valid_acc,
-        args = args,
+        params=params,
+        opt_state=opt_state,
+        epoch=epoch,
+        best_valid_acc=best_valid_acc,
+        args=args,
     )
     println("  💾 Checkpoint saved: $path (epoch $epoch, valid acc $(round(best_valid_acc * 100; digits=2))%)")
 end
@@ -320,11 +323,11 @@ end
 function load_checkpoint(path)
     data = jldopen(path, "r") do f
         (
-            params = f["params"],
-            opt_state = f["opt_state"],
-            epoch = f["epoch"],
-            best_valid_acc = f["best_valid_acc"],
-            args = f["args"],
+            params=f["params"],
+            opt_state=f["opt_state"],
+            epoch=f["epoch"],
+            best_valid_acc=f["best_valid_acc"],
+            args=f["args"],
         )
     end
     return data
@@ -339,13 +342,13 @@ end
 # ═══════════════════════════════════════════════════════════════════════
 
 function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::GestureData;
-                epochs::Int=200, lr::Float32=0.01f0, batch_size::Int=256,
-                start_epoch::Int=0, initial_opt_state=nothing,
-                initial_best_valid_acc::Float32=0.0f0,
-                save_dir::String="checkpoints", save_every::Int=5,
-                warmup_epochs::Int=0, args=nothing)
+    epochs::Int=200, lr::Float32=0.01f0, batch_size::Int=256,
+    start_epoch::Int=0, initial_opt_state=nothing,
+    initial_best_valid_acc::Float32=0.0f0,
+    save_dir::String="checkpoints", save_every::Int=5,
+    warmup_epochs::Int=0, args=nothing)
 
-    params = (cell = ps_cell, head = ps_head)
+    params = (cell=ps_cell, head=ps_head)
 
     if initial_opt_state !== nothing
         opt_state = initial_opt_state
@@ -362,16 +365,16 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::GestureDat
 
     n_train = size(data.train_x, 3)
 
-    for epoch in start_epoch:(epochs - 1)
+    for epoch in start_epoch:(epochs-1)
         # ── LR schedule (warmup → hold → taper)
         current_lr = lr_schedule(epoch, epochs)
         Optimisers.adjust!(opt_state, current_lr)
 
         # ── Evaluate
         valid_loss, valid_acc = evaluate(cell, head, params.cell, params.head,
-                                         st_cell, st_head, data.valid_x, data.valid_y)
+            st_cell, st_head, data.valid_x, data.valid_y)
         test_loss, test_acc = evaluate(cell, head, params.cell, params.head,
-                                       st_cell, st_head, data.test_x, data.test_y)
+            st_cell, st_head, data.test_x, data.test_y)
 
         # ── Model selection (by valid accuracy)
         if valid_acc > best_valid_acc && epoch > start_epoch
@@ -381,7 +384,7 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::GestureDat
             best_stats = (0.0f0, 0.0f0, valid_loss, valid_acc, test_loss, test_acc)
             best_path = joinpath(save_dir, "$(args.model)_gesture_best.jld2")
             save_checkpoint(best_path, best_params, opt_state, epoch,
-                            best_valid_acc, args)
+                best_valid_acc, args)
         end
 
         # ── Train one epoch
@@ -401,14 +404,14 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::GestureDat
 
             loss_val, grads = Zygote.withgradient(params) do p
                 batch_loss(cell, head, p.cell, p.head,
-                           st_cell, st_head, x_batch, y_batch)
+                    st_cell, st_head, x_batch, y_batch)
             end
 
             opt_state, params = Optimisers.update(opt_state, params, grads[1])
             push!(epoch_losses, loss_val)
 
             logits = forward_batch(cell, head, params.cell, params.head,
-                                    st_cell, st_head, x_batch)
+                st_cell, st_head, x_batch)
             preds = vec(getindex.(argmax(logits, dims=1), 1))
             epoch_correct += sum(preds .== y_batch)
             epoch_total += batch_size
@@ -421,7 +424,7 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::GestureDat
         if save_every > 0 && epoch > start_epoch && epoch % save_every == 0
             periodic_path = joinpath(save_dir, "$(args.model)_gesture_epoch_$(lpad(epoch, 3, '0')).jld2")
             save_checkpoint(periodic_path, params, opt_state, epoch,
-                            best_valid_acc, args)
+                best_valid_acc, args)
         end
 
         # ── Log
@@ -521,12 +524,12 @@ function main()
 
     println("\nStarting training...\n")
     best_params = train!(cell, head, ps_cell, ps_head, st_cell, st_head, data;
-                         epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
-                         start_epoch=start_epoch,
-                         initial_opt_state=initial_opt_state,
-                         initial_best_valid_acc=initial_best_valid_acc,
-                         save_dir=args.save_dir, save_every=args.save_every,
-                         warmup_epochs=args.warmup_epochs, args=args)
+        epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
+        start_epoch=start_epoch,
+        initial_opt_state=initial_opt_state,
+        initial_best_valid_acc=initial_best_valid_acc,
+        save_dir=args.save_dir, save_every=args.save_every,
+        warmup_epochs=args.warmup_epochs, args=args)
 end
 
 main()
