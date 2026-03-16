@@ -30,6 +30,7 @@ using JLD2
 
 # ── Include SRNNCell ────────────────────────────────────────────────────
 include(joinpath(@__DIR__, "..", "src", "models", "srnn.jl"))
+include(joinpath(@__DIR__, "..", "src", "training_utils.jl"))
 
 # ── Configuration ───────────────────────────────────────────────────────
 const SEQ_LEN    = 32
@@ -454,14 +455,9 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::PersonData
     n_train = size(data.train_x, 3)
 
     for epoch in start_epoch:(epochs - 1)
-        # ── LR warmup ───────────────────────────────────────────────
-        if warmup_epochs > 0 && epoch < warmup_epochs
-            warmup_frac = (epoch + 1) / warmup_epochs
-            current_lr = lr * (0.1f0 + 0.9f0 * Float32(warmup_frac))
-            Optimisers.adjust!(opt_state, current_lr)
-        elseif warmup_epochs > 0 && epoch == warmup_epochs
-            Optimisers.adjust!(opt_state, lr)
-        end
+        # ── LR schedule (warmup → hold → taper)
+        current_lr = lr_schedule(epoch, epochs)
+        Optimisers.adjust!(opt_state, current_lr)
 
         # ── Evaluate ────────────────────────────────────────────────
         valid_loss, valid_acc = evaluate(cell, head, params.cell, params.head,

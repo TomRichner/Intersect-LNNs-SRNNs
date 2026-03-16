@@ -727,3 +727,4 @@ function readout(cell::SRNNCell, S, ps)
     b = _extract_b(layer, parts, S)
     return b .* r
 end
+
