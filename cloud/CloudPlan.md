@@ -315,6 +315,7 @@ gs://liquidneuralnets-experiments/
 │   │   └── srnn/
 │   │       ├── har/seed1/
 │   │       │   ├── training_log.txt
+│   │       │   ├── run_metadata.json       # all args at training start
 │   │       │   └── srnn_har_best.jld2
 │   │       ├── gesture/seed1/
 │   │       └── ...

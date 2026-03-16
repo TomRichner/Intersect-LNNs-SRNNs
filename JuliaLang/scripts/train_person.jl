@@ -587,6 +587,9 @@ function main()
 
     cell, head, ps_cell, st_cell, ps_head, st_head = build_model(args, rng)
 
+    # Write run metadata for reproducibility
+    write_run_metadata(args.save_dir, args, "person")
+
     start_epoch = 0
     initial_opt_state = nothing
     initial_best_valid_acc = 0.0f0

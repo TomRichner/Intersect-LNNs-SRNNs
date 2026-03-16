@@ -129,6 +129,12 @@ if [ -f "${CHECKPOINT_DIR}/final_metrics.json" ]; then
     echo "  Uploaded final_metrics.json"
 fi
 
+# Upload run metadata (args, config)
+if [ -f "${CHECKPOINT_DIR}/run_metadata.json" ]; then
+    gsutil cp "${CHECKPOINT_DIR}/run_metadata.json" "${RESULT_PATH}/"
+    echo "  Uploaded run_metadata.json"
+fi
+
 # Also save latest checkpoint for Spot VM resume of other seeds
 if ls ${CHECKPOINT_DIR}/*epoch* 1>/dev/null 2>&1; then
     LATEST=$(ls -t ${CHECKPOINT_DIR}/*epoch* | head -1)

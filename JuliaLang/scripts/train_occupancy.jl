@@ -490,6 +490,9 @@ function main()
     # Build model
     cell, head, ps_cell, st_cell, ps_head, st_head = build_model(args, rng)
 
+    # Write run metadata for reproducibility
+    write_run_metadata(args.save_dir, args, "occupancy")
+
     # Handle resume
     start_epoch = 0
     initial_opt_state = nothing

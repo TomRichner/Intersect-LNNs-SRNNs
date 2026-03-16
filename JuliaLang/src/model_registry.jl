@@ -8,6 +8,8 @@
 # Supported models: "srnn", "ltc"
 # Future: "ctrnn", "node", "ctgru", "lstm"
 
+using Dates
+
 include(joinpath(@__DIR__, "models", "srnn.jl"))
 include(joinpath(@__DIR__, "models", "ltc1.jl"))
 
@@ -62,3 +64,47 @@ hidden_size(cell::LTCODE1) = cell.n
 # readout() already dispatches via methods defined in srnn.jl and ltc1.jl:
 #   readout(::SRNNCell, S, ps)  → synaptic/rate/dendritic readout
 #   readout(::LTCODE1, v, ps)   → identity (v)
+
+"""
+    write_run_metadata(save_dir, args, experiment; extra...)
+
+Write a `run_metadata.json` file capturing all training configuration.
+Called at the start of training so the metadata is available even if training crashes.
+"""
+function write_run_metadata(save_dir, args, experiment::String; extra...)
+    mkpath(save_dir)
+    metadata = Dict{String,Any}(
+        "experiment" => experiment,
+        "timestamp" => Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS"),
+    )
+    # Serialize all args
+    for (k, v) in pairs(args)
+        metadata[string(k)] = v isa Symbol ? string(v) : v
+    end
+    # Add any extra key-value pairs
+    for (k, v) in extra
+        metadata[string(k)] = v
+    end
+
+    path = joinpath(save_dir, "run_metadata.json")
+    open(path, "w") do io
+        # Simple JSON serialization (no external dependency)
+        print(io, "{\n")
+        entries = collect(pairs(metadata))
+        for (i, (k, v)) in enumerate(entries)
+            print(io, "  \"$k\": ")
+            if v isa AbstractString
+                print(io, "\"$(escape_string(v))\"")
+            elseif v isa Bool
+                print(io, v ? "true" : "false")
+            elseif v isa Number
+                print(io, v)
+            else
+                print(io, "\"$(escape_string(string(v)))\"")
+            end
+            println(io, i < length(entries) ? "," : "")
+        end
+        print(io, "}\n")
+    end
+    println("  📋 Run metadata saved: $path")
+end
