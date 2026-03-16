@@ -117,6 +117,7 @@ gcloud compute instances create "${VM_NAME}" \
     --machine-type="${VM_MACHINE}" \
     --image-family="${GCP_IMAGE_FAMILY}" \
     --boot-disk-size=30GB \
+    --no-address \
     ${SPOT_FLAGS} \
     --metadata="experiment=${EXPERIMENT_NAME},model=${MODEL},seed=${SEED},train-script=${TRAIN_SCRIPT},train-args=${ARGS},gcs-bucket=${GCS_BUCKET}" \
     --metadata-from-file=startup-script="${SCRIPT_DIR}/startup.sh" \
@@ -124,6 +125,7 @@ gcloud compute instances create "${VM_NAME}" \
 
 echo ""
 echo "=== VM '${VM_NAME}' launched ==="
-echo "  Monitor:  gcloud compute ssh ${VM_NAME} --zone=${GCP_ZONE} --command='tail -f /tmp/training.log'"
+echo "  Monitor:  gcloud compute ssh ${VM_NAME} --zone=${GCP_ZONE} --tunnel-through-iap --command='tail -f /tmp/training.log'"
+echo "  Serial:   gcloud compute instances get-serial-port-output ${VM_NAME} --zone=${GCP_ZONE} | tail -20"
 echo "  Status:   gcloud compute instances describe ${VM_NAME} --zone=${GCP_ZONE} --format='value(status)'"
 echo "  Delete:   gcloud compute instances delete ${VM_NAME} --zone=${GCP_ZONE} --quiet"

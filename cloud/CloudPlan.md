@@ -23,29 +23,34 @@ VM, results are stored centrally in a GCS bucket, and VMs self-delete after comp
 │                                                                 │
 │  monitor.sh ──────── polls VM status + GCS results              │
 │  collect_results.sh ── downloads results, computes mean ± std   │
+│                                                                 │
+│  SSH via IAP:  gcloud compute ssh <vm> --tunnel-through-iap     │
+│  Serial logs:  gcloud compute instances get-serial-port-output  │
 └─────────────────────────────────────────────────────────────────┘
          │                         ▲
-         │  (create VMs)           │  (upload results)
+         │ (create VMs, no ext IP) │ (upload results via PGA)
          ▼                         │
 ┌─────────────────────────────────────────────────────────────────┐
 │  GOOGLE CLOUD                                                   │
 │                                                                 │
-│  ┌──────────────────────────────┐   ┌────────────────────────┐  │
-│  │  GCS Bucket                  │   │  VM: srnn-har-seed1    │  │
-│  │  gs://srnn-experiments/      │   │  ┌──────────────────┐  │  │
-│  │                              │   │  │ 1. Clone repo    │  │  │
-│  │  ├── datasets/               │◄──│  │ 2. Pull data     │  │  │
-│  │  │   ├── har/                │   │  │ 3. Train model   │  │  │
-│  │  │   ├── gesture/            │   │  │ 4. Upload results│  │  │
-│  │  │   └── ...                 │   │  │ 5. Self-delete   │  │  │
-│  │  ├── results/                │   │  └──────────────────┘  │  │
-│  │  │   ├── har/srnn/seed1/     │   └────────────────────────┘  │
-│  │  │   ├── har/srnn/seed2/     │                               │
-│  │  │   └── ...                 │   ┌────────────────────────┐  │
-│  │  └── checkpoints/            │   │  VM: srnn-har-seed2    │  │
-│  │      └── (for Spot resume)   │   │  (same as above)       │  │
-│  └──────────────────────────────┘   └────────────────────────┘  │
+│  ┌─────────────┐  ┌───────────┐  ┌────────────────────────┐     │
+│  │ Cloud NAT   │  │ Private   │  │  VM: srnn-har-seed1    │     │
+│  │ (srnn-nat)  │  │ Google    │  │  (no external IP)      │     │
+│  │ Outbound    │  │ Access    │  │  ┌──────────────────┐  │     │
+│  │ internet    │  │ (GCS/API) │  │  │ 1. git pull      │──┼──►NAT│
+│  │ (git pull)  │  │           │  │  │ 2. gsutil data   │──┼──►PGA│
+│  └─────────────┘  └───────────┘  │  │ 3. Train model   │  │     │
+│                                  │  │ 4. Upload results│──┼──►PGA│
+│  ┌──────────────────────────────┐│  │ 5. Self-delete   │  │     │
+│  │  GCS Bucket                  ││  └──────────────────┘  │     │
+│  │  gs://liquidneuralnets-      │└────────────────────────┘     │
+│  │       experiments/           │                               │
+│  │  ├── datasets/               │  ┌────────────────────────┐   │
+│  │  ├── results/srnn/<exp>/     │  │  VM: srnn-har-seed2    │   │
+│  │  └── checkpoints/            │  │  (same as above)       │   │
+│  └──────────────────────────────┘  └────────────────────────┘   │
 │                                                                 │
+│  IAP Firewall: allow-iap-ssh (35.235.240.0/20 → tcp:22)        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -60,26 +65,26 @@ From Hasani et al. 2021, we need to reproduce the following. All reported as
 
 | # | Experiment   | Task Type      | Metric   | Seq Len | Features | Classes/Out | VM Size         |
 |---|-------------|----------------|----------|---------|----------|-------------|-----------------|
-| 1 | HAR          | Classification | Accuracy | 16      | 561      | 6           | n4-highmem-2    |
-| 2 | Gesture      | Classification | Accuracy | 32      | 32       | 5           | n4-highmem-2    |
-| 3 | Occupancy    | Classification | Accuracy | 16      | 5        | 2           | n4-highmem-2    |
-| 4 | SMnist       | Classification | Accuracy | 784     | 1        | 10          | n4-highmem-4    |
-| 5 | Traffic      | Regression     | MSE      | 32      | varies   | 1           | n4-highmem-2    |
-| 6 | Power        | Regression     | MSE      | 32      | varies   | 1           | n4-highmem-2    |
-| 7 | Ozone        | Classification | F1-score | 32      | 72       | 2           | n4-highmem-2    |
+| 1 | HAR          | Classification | Accuracy | 16      | 561      | 6           | n4d-highmem-2   |
+| 2 | Gesture      | Classification | Accuracy | 32      | 32       | 5           | n4d-highmem-2   |
+| 3 | Occupancy    | Classification | Accuracy | 16      | 5        | 2           | n4d-highmem-2   |
+| 4 | SMnist       | Classification | Accuracy | 784     | 1        | 10          | n4d-highmem-4   |
+| 5 | Traffic      | Regression     | MSE      | 32      | varies   | 1           | n4d-highmem-2   |
+| 6 | Power        | Regression     | MSE      | 32      | varies   | 1           | n4d-highmem-2   |
+| 7 | Ozone        | Classification | F1-score | 32      | 72       | 2           | n4d-highmem-2   |
 
 ### Tables 4, 5 — Person Activity
 
 | # | Experiment   | Task Type      | Metric   | Setting | VM Size         |
 |---|-------------|----------------|----------|---------|-----------------|
-| 8 | Person (1st) | Classification | Accuracy | Standard| n4-highmem-2    |
-| 9 | Person (2nd) | Classification | Accuracy | Rubanova| n4-highmem-2    |
+| 8 | Person (1st) | Classification | Accuracy | Standard| n4d-highmem-4   |
+| 9 | Person (2nd) | Classification | Accuracy | Rubanova| n4d-highmem-4   |
 
 ### Table 6 — Half-Cheetah
 
 | #  | Experiment   | Task Type  | Metric | VM Size         |
 |----|-------------|------------|--------|-----------------|
-| 10 | Cheetah      | Regression | MSE    | n4-highmem-2    |
+| 10 | Cheetah      | Regression | MSE    | n4d-highmem-2   |
 
 ### Total Runs
 
@@ -189,11 +194,11 @@ the same pattern as `train_har_srnn.jl`:
 | `train_har_srnn.jl` | ✅ Done | Baseline script with --seed, checkpointing, batched BPTT |
 | `train_gesture_srnn.jl` | ✅ Done | 7 CSV files, interleaved windowing, seq_len=32, 5 classes, 3-way split |
 | `train_occupancy_srnn.jl` | ✅ Done | CSV.jl data loader, z-score norm, 5 features, 2 classes, two test sets |
-| `train_smnist_srnn.jl` | TODO | Very long sequences (784), pixel-by-pixel input |
-| `train_traffic_srnn.jl` | TODO | Regression (MSE loss), seq_len=32 |
-| `train_power_srnn.jl` | TODO | Regression (MSE loss), seq_len=32 |
-| `train_ozone_srnn.jl` | TODO | Binary classification, F1 metric, 72 features |
-| `train_person_srnn.jl` | TODO | Two settings (standard + Rubanova), bs=64 |
+| `train_smnist_srnn.jl` | ✅ Done | Very long sequences (784), pixel-by-pixel input, Keras download |
+| `train_traffic_srnn.jl` | ✅ Done | Regression (MSE loss), seq_len=32, z-score norm |
+| `train_power_srnn.jl` | ✅ Done | Regression (MSE loss), seq_len=32, forward-fill missing values |
+| `train_ozone_srnn.jl` | ✅ Done | Binary classification, F1 metric, 72 features, weighted CE |
+| `train_person_srnn.jl` | ✅ Done | Per-timestep classification, per-person time series, bs=128 |
 | `train_cheetah_srnn.jl` | ✅ Done | Autoregressive regression (17→17), MuJoCo rollouts, NPZ.jl for .npy loading |
 
 ### Phase 3 — Launch & Monitor
@@ -303,20 +308,46 @@ gs://srnn-experiments/
 
 ## VM Types Reference
 
-| Machine Type    | vCPUs | RAM (GB) | CPU | $/hr (standard) | Use Case |
-|----------------|-------|----------|-----|-----------------|----------|
-| **n4-highmem-2** | 2   | 16       | Intel Emerald Rapids (5th gen Xeon) | ~$0.12 | **Default — all experiments** |
-| n4-highmem-4    | 4    | 32       | Intel Emerald Rapids | ~$0.24 | SMnist (long sequences) |
+| Machine Type     | vCPUs | RAM (GB) | $/hr (standard) | Use Case |
+|-----------------|-------|----------|-----------------|----------|
+| **n4d-highmem-2** | 2   | 16       | ~$0.12 | **Default** — HAR, Gesture, Occupancy, Traffic, Ozone, Cheetah |
+| **n4d-highmem-4** | 4   | 32       | ~$0.24 | **Large** — SMnist, Power, Person (high RAM usage) |
 
-> **Why n4-highmem-2?** Julia's Zygote BPTT is single-threaded — extra CPUs are
-> wasted. N4 has ~2× single-core performance vs E2 (Intel Emerald Rapids vs shared-core).
-> RAM usage observed: ~1.8 GB for HAR (32 neurons), so 16 GB is plenty.
+Observed RAM usage (smoke test):
+- HAR: ~1.8 GB, Gesture/Ozone: small, Occupancy: small
+- Traffic: 9.6 GB (tight on 16 GB), SMnist: 7.7 GB, Power: 8.8 GB
+- Person: >16 GB (OOM on n4d-highmem-2, needs n4d-highmem-4)
+
+> **Why n4d-highmem-2?** Julia's Zygote BPTT is single-threaded — extra CPUs are
+> wasted. N4D has ~2× single-core performance vs E2 (Intel Emerald Rapids vs shared-core).
 
 > **Why not Spot?** First-epoch JIT compilation takes 15-25 min. Spot preemptions
 > during JIT waste the entire compilation. Standard VMs are more reliable.
 
 > **vCPU Quota:** Project has a 64 global vCPU quota (binding), 200 regional (us-central1).
-> With n4-highmem-2 (2 vCPU each), we can run **32 concurrent VMs**.
+> With n4d-highmem-2 (2 vCPU each), we can run **32 concurrent VMs**.
+
+---
+
+## Networking — IAP + Cloud NAT (no external IPs)
+
+VMs are created with `--no-address` (no external IPv4). This removes the IPv4
+address quota bottleneck (was limited to 8 VMs). Networking is handled by:
+
+| Component | Purpose | Setup Command |
+|-----------|---------|---------------|
+| **Private Google Access** | VMs reach GCS and Compute API without external IP | `gcloud compute networks subnets update default --region=us-central1 --enable-private-ip-google-access` |
+| **IAP Firewall Rule** | Allow SSH tunneling through Google's IAP proxy | `gcloud compute firewall-rules create allow-iap-ssh --rules=tcp:22 --source-ranges=35.235.240.0/20` |
+| **Cloud Router** | Required for NAT gateway | `gcloud compute routers create srnn-router --region=us-central1 --network=default` |
+| **Cloud NAT** | Outbound internet for git pull (shared, no per-VM IP) | `gcloud compute routers nats create srnn-nat --router=srnn-router --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges` |
+
+**SSH access:** `gcloud compute ssh <vm> --zone=us-central1-a --tunnel-through-iap`
+**Serial logs:** `gcloud compute instances get-serial-port-output <vm>` (works without SSH)
+
+**Cost:** Cloud NAT gateway costs ~$0.044/hr (~$1/day). Delete when not running experiments:
+```bash
+gcloud compute routers nats delete srnn-nat --router=srnn-router --region=us-central1 --quiet
+```
 
 ---
 
@@ -480,52 +511,78 @@ Scripts created:
 
 | Script | Purpose |
 |--------|---------|
-| `cloud/startup.sh` | Runs on VM boot: pulls code, downloads data, checks for resume checkpoint, trains, uploads results to GCS, self-deletes |
-| `cloud/launch_run.sh` | Launches a single VM: pre-flight checks (quota, existing VM, existing results), passes all config as VM metadata |
+| `cloud/startup.sh` | Runs on VM boot: pulls code via Cloud NAT, downloads data from GCS via PGA, checks for resume checkpoint, trains, uploads results to GCS, self-deletes |
+| `cloud/launch_run.sh` | Launches a single VM with `--no-address` (no external IP): pre-flight checks (quota, existing VM, existing results), passes all config as VM metadata |
 | `cloud/launch_batch.sh` | Launches N_SEEDS VMs for an experiment (calls launch_run.sh in a loop) |
+| `cloud/launch_all.sh` | Launches all experiments in waves, respecting vCPU quota |
+| `cloud/smoke_test.sh` | Quick validation: launches all experiments for a reduced number of epochs |
 | `cloud/monitor.sh` | Shows vCPU quota usage, running VMs, and per-seed result status from GCS |
+| `cloud/config.env` | GCP project settings, VM types, image family, IAP/NAT documentation |
+| `cloud/experiments/*.env` | Per-experiment config: script path, args, machine type, seed count |
 
-**Updates since initial creation:**
-- `--seed` flag added to `train_har_srnn.jl` — seeds both model init RNG and global RNG
-- `startup.sh` fixed: runs as root but uses `sudo -u tom -i` for Julia/git (package cache compatibility)
-- `stdbuf -oL` added to startup.sh for line-buffered Julia output
-- `monitor.sh` shows both global (64) and regional (200) vCPU quotas
-- Switched from Spot to standard VMs (Spot preemptions during JIT compilation)
-- Switched from e2-highmem-2 to **n4-highmem-2** (~2× single-core performance)
+**Key design decisions:**
+- `startup.sh` runs as root but uses `sudo -u tom -i` for Julia/git (package cache compatibility)
+- `stdbuf -oL` for line-buffered Julia output visible in serial console
+- VMs created with `--no-address` — uses IAP for SSH, Cloud NAT for git, PGA for GCS
+- Standard VMs (not Spot) — JIT compilation takes 15-25 min, preemption wastes it
+- Switched from e2-highmem to **n4d-highmem** (~2× single-core performance)
 
-- [x] Done (2025-03-15)
+- [x] Done (2025-03-15), updated for IAP/NAT (2025-03-16)
 
-### Step 5: Smoke test with one HAR cloud run ⏳
+### Step 5: Cloud smoke test (20 epochs, all experiments) ✅
 
-Smoke test with `--epochs 3` on non-preemptible e2-highmem-2 (launched before n4 switch).
+Ran `./cloud/smoke_test.sh --epochs 20` overnight. 8 of 9 experiments launched
+(Cheetah blocked by IPv4 quota — fixed by IAP migration).
 
-**Progress:**
-- [x] VM booted and ran startup.sh correctly (root→tom user context fixed)
-- [x] git pull, data download (269.5 MiB) worked  
-- [x] Julia started training with **no recompilation** (pre-compiled packages found)
-- [x] Gradient smoke test passed (initial loss 1.56, expected ~1.79)
-- [x] Epoch 0 completed: train acc 41.1%, valid acc 13.8%
-- [x] Best checkpoint saved at epoch 1 (valid acc 29.9%)
-- [ ] Waiting for epochs 1-2 to complete (stdout buffered — stdbuf fix is in for next run)
-- [ ] Results uploaded to GCS
-- [ ] VM self-deleted
+**Results (single seed, 20 epochs vs Hasani et al. 2021 Table 3):**
+
+| Dataset | Metric | LTC (Hasani) | SRNN (ours) | Verdict |
+|---------|--------|-------------|-------------|----------|
+| Occupancy | accuracy | 94.63% | **98.71%** | Beats all models |
+| HAR | accuracy | 95.67% | 94.55% | Competitive |
+| Traffic | MSE | 0.099 | 0.166 (ep 11) | Approaching LSTM |
+| Power | MSE | 0.642 | 0.026 (ep 1) | Suspiciously good |
+| SMnist | accuracy | 97.57% | 41.23% (ep 2) | Too early |
+| Gesture | accuracy | 69.55% | 43.33% | Below all |
+| Ozone | F1 | 0.302 | 0.129 | Below all |
+| Person | accuracy | 85.48% | OOM (exit 137) | Needs n4d-highmem-4 |
+| Cheetah | MSE | 2.308 | Not launched | IP quota limit |
+
+Full results: `JuliaLang/results/cloud_smoke_test_20epoch.md`
 
 **Key findings:**
-- First-epoch JIT compilation takes ~30 min on e2-highmem-2 (single-threaded)
-- RAM usage: ~1.8 GB RSS (well within 16 GB)
-- CPU: 98% of one core (single-threaded Zygote BPTT confirmed)
-- Spot VM was preempted during first attempt — switched to standard VMs
+- Person OOM'd on n4d-highmem-2 (16 GB) — updated to n4d-highmem-4 (32 GB)
+- SMnist and Power are very slow (~3.5 and ~4.5 hrs/epoch)
+- Occupancy result (98.71%) is a genuine standout
 
-### Step 6: Write remaining training scripts
+- [x] Done (2025-03-16)
 
-| Script | Status | Verified Locally |
-|--------|--------|------------------|
-| `train_har_srnn.jl` | ✅ | ✅ + cloud tested |
-| `train_occupancy_srnn.jl` | ✅ | ✅ (loss 0.68, expected ~0.69) |
-| `train_gesture_srnn.jl` | ✅ | ✅ (loss 1.43, expected ~1.61) |
-| `train_traffic_srnn.jl` | TODO | Next (first regression task) |
-| `train_power_srnn.jl` | TODO | |
-| `train_ozone_srnn.jl` | TODO | |
-| `train_smnist_srnn.jl` | TODO | |
-| `train_person_srnn.jl` | TODO | |
-| `train_cheetah_srnn.jl` | ✅ | ✅ (MSE 18.5→4.2 in 2 epochs) |
+### Step 6: IAP + Cloud NAT migration ✅
+
+Removed external IPv4 address quota bottleneck (was limited to 8 VMs).
+See "Networking — IAP + Cloud NAT" section above for details.
+
+- [x] Done (2025-03-16)
+
+### Step 7: Write remaining training scripts ✅
+
+| Script | Status | Verified |
+|--------|--------|----------|
+| `train_har_srnn.jl` | ✅ | Local + cloud (20 epochs) |
+| `train_gesture_srnn.jl` | ✅ | Local + cloud (20 epochs) |
+| `train_occupancy_srnn.jl` | ✅ | Local + cloud (20 epochs) |
+| `train_smnist_srnn.jl` | ✅ | Local + cloud (2/20 epochs) |
+| `train_traffic_srnn.jl` | ✅ | Local + cloud (12/20 epochs) |
+| `train_power_srnn.jl` | ✅ | Local + cloud (2/20 epochs) |
+| `train_ozone_srnn.jl` | ✅ | Local + cloud (20 epochs) |
+| `train_person_srnn.jl` | ✅ | Local (cloud OOM, VM type updated) |
+| `train_cheetah_srnn.jl` | ✅ | Local (cloud not yet launched) |
+
+- [x] Done (2025-03-16)
+
+### Step 8: Full production run (5 seeds × 9 experiments)
+
+- [ ] Launch all SRNN experiments with `launch_all.sh`
+- [ ] Monitor progress with `monitor.sh` and serial port logs
+- [ ] Collect results with `collect_results.sh`
+- [ ] Generate comparison table (SRNN vs Hasani Table 3)
