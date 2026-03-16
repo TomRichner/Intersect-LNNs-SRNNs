@@ -176,8 +176,8 @@ This runs automatically when each VM boots:
 # 3. Download dataset from GCS
 # 4. Check for existing checkpoint in GCS (for Spot VM resume)
 # 5. Run training:
-#      julia --project=JuliaLang JuliaLang/scripts/train_<exp>_srnn.jl \
-#            --seed $SEED $ARGS \
+#      julia --project=JuliaLang JuliaLang/scripts/train_<exp>.jl \
+#            --model $MODEL --seed $SEED $ARGS \
 #            --save /tmp/checkpoints
 # 6. Upload results + best checkpoint to GCS
 # 7. Self-delete the VM
@@ -185,43 +185,53 @@ This runs automatically when each VM boots:
 
 ### Phase 2 — Training Scripts (Julia)
 
-Write training scripts for each experiment, adapting from the Python originals
-in `liquid_time_constant_networks/experiments_with_ltcs/`. Each script follows
-the same pattern as `train_har_srnn.jl`:
+Model-agnostic training scripts accept a `--model` flag (`srnn`, `ltc`).
+Model dispatch is handled by `JuliaLang/src/model_registry.jl` which provides:
+- `build_cell(model, n, n_in, args, rng)` — construct the right cell type
+- `initial_state(cell, B)` — zero state (dispatch on cell type)
+- `readout(cell, S, ps)` — already dispatched in `srnn.jl` and `ltc1.jl`
 
-| Script | Status | Key Differences from HAR |
-|--------|--------|--------------------------|
-| `train_har_srnn.jl` | ✅ Done | Baseline script with --seed, checkpointing, batched BPTT |
-| `train_gesture_srnn.jl` | ✅ Done | 7 CSV files, interleaved windowing, seq_len=32, 5 classes, 3-way split |
-| `train_occupancy_srnn.jl` | ✅ Done | CSV.jl data loader, z-score norm, 5 features, 2 classes, two test sets |
-| `train_smnist_srnn.jl` | ✅ Done | Very long sequences (784), pixel-by-pixel input, Keras download |
-| `train_traffic_srnn.jl` | ✅ Done | Regression (MSE loss), seq_len=32, z-score norm |
-| `train_power_srnn.jl` | ✅ Done | Regression (MSE loss), seq_len=32, forward-fill missing values |
-| `train_ozone_srnn.jl` | ✅ Done | Binary classification, F1 metric, 72 features, weighted CE |
-| `train_person_srnn.jl` | ✅ Done | Per-timestep classification, per-person time series, bs=128 |
-| `train_cheetah_srnn.jl` | ✅ Done | Autoregressive regression (17→17), MuJoCo rollouts, NPZ.jl for .npy loading |
+Each script is identical for all models — only the `--model` flag changes.
+
+| Script | Replaces | Task Type |
+|--------|----------|-----------|
+| `train_har.jl` | `train_har_srnn.jl` | Classification (6 classes, last-timestep) |
+| `train_gesture.jl` | `train_gesture_srnn.jl` | Classification (5 classes, last-timestep) |
+| `train_occupancy.jl` | `train_occupancy_srnn.jl` | Classification (2 classes, last-timestep) |
+| `train_smnist.jl` | `train_smnist_srnn.jl` | Classification (10 classes, last-timestep) |
+| `train_traffic.jl` | `train_traffic_srnn.jl` | Regression (MSE, per-timestep) |
+| `train_power.jl` | `train_power_srnn.jl` | Regression (MSE, per-timestep) |
+| `train_ozone.jl` | `train_ozone_srnn.jl` | Classification (2 classes, F1 metric) |
+| `train_person.jl` | `train_person_srnn.jl` | Classification (7 classes, per-timestep) |
+| `train_cheetah.jl` | `train_cheetah_srnn.jl` | Regression (MSE, autoregressive 17→17) |
+
+Old `train_*_srnn.jl` scripts are preserved for reference.
 
 ### Phase 3 — Launch & Monitor
 
 All commands require a **run name** as the first argument. This scopes VM names,
 GCS result paths, and checkpoint paths so different runs never collide.
+The `--model` flag is passed automatically by `startup.sh` from VM metadata.
 
 #### Step 3.1: `launch_run.sh` — Launch a single run
 ```
 ./cloud/launch_run.sh <run_name> <experiment> <model> <seed> [--epochs N]
 # Example:
 ./cloud/launch_run.sh prod har srnn 1
+./cloud/launch_run.sh prod har ltc 1          # same script, different model
 ./cloud/launch_run.sh smoke20 gesture srnn 1 --epochs 20
 ```
 - Creates a VM named `<run>-<model>-<experiment>-seed<N>` (e.g. `prod-srnn-har-seed1`)
 - Results go to: `gs://<bucket>/results/<run>/<model>/<experiment>/seed<N>/`
-- VM metadata carries: run name, experiment, seed, training args, GCS paths
+- VM metadata carries: run name, model, experiment, seed, training args, GCS paths
+- `startup.sh` passes `--model $MODEL` to the Julia training script automatically
 
 #### Step 3.2: `launch_batch.sh` — Launch all seeds for an experiment
 ```
 ./cloud/launch_batch.sh <run_name> <experiment> <model>
 # Example:
 ./cloud/launch_batch.sh prod har srnn
+./cloud/launch_batch.sh prod har ltc          # LTC comparison
 # Creates 5 VMs: prod-srnn-har-seed1 through prod-srnn-har-seed5
 ```
 
@@ -258,9 +268,15 @@ GCS result paths, and checkpoint paths so different runs never collide.
 gcloud storage rm -r gs://liquidneuralnets-experiments/results/smoke20/
 ```
 
-### Phase 4 — Repeat with LTC model
+### Phase 4 — Run LTC experiments
 
-Once SRNN experiments are validated, repeat with `ltc1.jl` training scripts.
+No separate LTC scripts needed — use the same model-agnostic scripts with `--model ltc`:
+```bash
+# Run all LTC experiments (same scripts, just change model name)
+./cloud/launch_all.sh prod-ltc --model ltc
+# Or individual:
+./cloud/launch_run.sh prod har ltc 1
+```
 
 ---
 
