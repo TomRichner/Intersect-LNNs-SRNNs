@@ -3,12 +3,12 @@
 # launch_run.sh — Launch a single experiment VM
 # ─────────────────────────────────────────────────────────────────────
 # Usage:
-#   ./cloud/launch_run.sh <experiment> <model> <seed>
+#   ./cloud/launch_run.sh <experiment> <model> <seed> [--epochs N] [--bs N]
 #
 # Examples:
-#   ./cloud/launch_run.sh har srnn 1
-#   ./cloud/launch_run.sh smnist srnn 3
-#   ./cloud/launch_run.sh har ltc 2
+#   ./cloud/launch_run.sh har srnn 1              # uses env defaults
+#   ./cloud/launch_run.sh har srnn 1 --epochs 1   # smoke test (1 epoch)
+#   ./cloud/launch_run.sh smnist srnn 3 --bs 64 --epochs 2
 #
 # The script:
 #   1. Reads cloud/config.env for GCP settings
@@ -20,16 +20,29 @@ set -euo pipefail
 
 # ── Parse arguments ────────────────────────────────────────────────
 if [ $# -lt 3 ]; then
-    echo "Usage: $0 <experiment> <model> <seed>"
+    echo "Usage: $0 <experiment> <model> <seed> [--epochs N] [--bs N]"
     echo "  experiment: har, gesture, occupancy, smnist, traffic, power, ozone, person, cheetah"
     echo "  model:      srnn, ltc"
     echo "  seed:       1-5"
+    echo "  --epochs N: override epoch count (appended to env ARGS)"
+    echo "  --bs N:     override batch size (appended to env ARGS)"
     exit 1
 fi
 
 EXPERIMENT=$1
 MODEL=$2
 SEED=$3
+shift 3
+
+# Parse optional overrides
+OVERRIDE_ARGS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --epochs) OVERRIDE_ARGS="${OVERRIDE_ARGS} --epochs $2"; shift 2 ;;
+        --bs)     OVERRIDE_ARGS="${OVERRIDE_ARGS} --bs $2"; shift 2 ;;
+        *)        echo "Unknown override: $1"; exit 1 ;;
+    esac
+done
 
 # ── Load config ────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +56,11 @@ if [ ! -f "${EXP_ENV}" ]; then
     exit 1
 fi
 source "${EXP_ENV}"
+
+# ── Apply CLI overrides (appended last → last-wins in Julia parsers) ─
+if [ -n "${OVERRIDE_ARGS}" ]; then
+    ARGS="${ARGS}${OVERRIDE_ARGS}"
+fi
 
 # ── Determine VM name and machine type ─────────────────────────────
 VM_NAME="${MODEL}-${EXPERIMENT_NAME}-seed${SEED}"
