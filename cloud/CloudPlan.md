@@ -119,10 +119,10 @@ Intersect-LNNs-SRNNs/
 │   │   ├── train_har_srnn.jl       ← ✅ done + cloud tested
 │   │   ├── train_gesture_srnn.jl   ← ✅ done, locally verified
 │   │   ├── train_occupancy_srnn.jl ← ✅ done, locally verified
-│   │   ├── train_smnist_srnn.jl    ← TODO
-│   │   ├── train_traffic_srnn.jl   ← TODO (first regression task)
+│   │   ├── train_smnist_srnn.jl    ← ✅ done, locally verified
+│   │   ├── train_traffic_srnn.jl   ← ✅ done, locally verified (first regression task, bs=64)
 │   │   ├── train_power_srnn.jl     ← TODO
-│   │   ├── train_ozone_srnn.jl     ← TODO
+│   │   ├── train_ozone_srnn.jl     ← ✅ done, locally verified (F1 metric, weighted CE)
 │   │   ├── train_person_srnn.jl    ← TODO
 │   │   └── train_cheetah_srnn.jl   ← TODO
 │   └── ...
