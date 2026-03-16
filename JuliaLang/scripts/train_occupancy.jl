@@ -48,8 +48,10 @@ function parse_args()
     lr = 0.01f0
     batch_size = 256
     n_E = -1  # sentinel: will default to model_size ÷ 2
-    n_a = 3
-    n_b = 0
+    n_a_E = 3
+    n_a_I = 0
+    n_b_E = 1
+    n_b_I = 0
     unfolds = 6
     h = Float32(1 / 50)
     readout_mode = :synaptic
@@ -75,10 +77,14 @@ function parse_args()
             batch_size = parse(Int, ARGS[i+1])
         elseif ARGS[i] == "--ne" && i < length(ARGS)
             n_E = parse(Int, ARGS[i+1])
-        elseif ARGS[i] == "--n_a" && i < length(ARGS)
-            n_a = parse(Int, ARGS[i+1])
-        elseif ARGS[i] == "--n_b" && i < length(ARGS)
-            n_b = parse(Int, ARGS[i+1])
+        elseif ARGS[i] == "--n_a_E" && i < length(ARGS)
+            n_a_E = parse(Int, ARGS[i+1])
+        elseif ARGS[i] == "--n_a_I" && i < length(ARGS)
+            n_a_I = parse(Int, ARGS[i+1])
+        elseif ARGS[i] == "--n_b_E" && i < length(ARGS)
+            n_b_E = parse(Int, ARGS[i+1])
+        elseif ARGS[i] == "--n_b_I" && i < length(ARGS)
+            n_b_I = parse(Int, ARGS[i+1])
         elseif ARGS[i] == "--unfolds" && i < length(ARGS)
             unfolds = parse(Int, ARGS[i+1])
         elseif ARGS[i] == "--h" && i < length(ARGS)
@@ -113,7 +119,7 @@ function parse_args()
         error("--model is required (srnn, ltc)")
     end
 
-    return (; model, epochs, model_size, lr, batch_size, n_E, n_a, n_b,
+    return (; model, epochs, model_size, lr, batch_size, n_E, n_a_E, n_a_I, n_b_E, n_b_I,
               unfolds, h, readout_mode, solver, per_neuron, dales, seed,
               save_dir, resume_path, save_every, warmup_epochs)
 end
@@ -464,7 +470,7 @@ function main()
     println("Occupancy Training — $(uppercase(args.model)) ($(args.solver), batched BPTT)")
     println("  Model: $(args.model), size: $(args.model_size)")
     println("  per_neuron: $(args.per_neuron)")
-    println("  SFA timescales (n_a_E): $(args.n_a), STD (n_b_E): $(args.n_b)")
+    println("  SFA: n_a_E=$(args.n_a_E) n_a_I=$(args.n_a_I), STD: n_b_E=$(args.n_b_E) n_b_I=$(args.n_b_I)")
     println("  Solver: $(args.solver), h: $(args.h), unfolds: $(args.unfolds)")
     println("  Readout: $(args.readout_mode)")
     println("  LR: $(args.lr), Epochs: $(args.epochs), Batch: $(args.batch_size)")

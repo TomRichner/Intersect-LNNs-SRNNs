@@ -50,6 +50,23 @@ function _apply_dales(W, n_E)
     hcat(NNlib.softplus.(W[:, 1:n_E]), .-NNlib.softplus.(W[:, n_E+1:end]))
 end
 
+"""
+    _get_tau_a(ps, n_a, pop) → tau matrix
+
+Get SFA time constants for population `pop` (:E or :I).
+- n_a == 1: single trainable tau, returns scalar/vector via `log_tau_a_{pop}`
+- n_a >= 2: range from lo to hi via `_make_tau_range`
+"""
+function _get_tau_a(ps, n_a::Int, pop::Symbol)
+    if n_a == 1
+        return NNlib.softplus.(getproperty(ps, Symbol(:log_tau_a_, pop)))
+    else
+        lo = getproperty(ps, Symbol(:log_tau_a_, pop, :_lo))
+        hi = getproperty(ps, Symbol(:log_tau_a_, pop, :_hi))
+        return NNlib.softplus.(_make_tau_range(lo, hi, n_a))
+    end
+end
+
 # ── State unpacking ─────────────────────────────────────────────────────
 
 """
@@ -265,19 +282,27 @@ function Lux.initialparameters(rng::AbstractRNG, layer::SRNN_ODE)
     )
 
     # SFA parameters for E neurons
-    if layer.n_a_E > 0
+    if layer.n_a_E == 1
+        ps[:log_tau_a_E] = _s_or_v(_inv_sp(1.0), n_E)     # single τ ≈ 1.0s
+        ps[:log_c_E] = _s_or_v(-3.0, n_E)
+        ps[:c_0_E] = _s_or_v(0.0, n_E)
+    elseif layer.n_a_E >= 2
         ps[:log_tau_a_E_lo] = _s_or_v(_inv_sp(0.25), n_E)  # τ = 0.25s
         ps[:log_tau_a_E_hi] = _s_or_v(_inv_sp(10.0), n_E)  # τ = 10.0s
-        ps[:log_c_E] = _s_or_v(-3.0, n_E)     # softplus(-3) ≈ 0.049 ≈ MATLAB 0.15/3
-        ps[:c_0_E] = _s_or_v(0.0, n_E)        # SFA resting setpoint (unconstrained)
+        ps[:log_c_E] = _s_or_v(-3.0, n_E)
+        ps[:c_0_E] = _s_or_v(0.0, n_E)
     end
 
     # SFA parameters for I neurons
-    if layer.n_a_I > 0
+    if layer.n_a_I == 1
+        ps[:log_tau_a_I] = _s_or_v(_inv_sp(1.0), n_I)     # single τ ≈ 1.0s
+        ps[:log_c_I] = _s_or_v(-3.0, n_I)
+        ps[:c_0_I] = _s_or_v(0.0, n_I)
+    elseif layer.n_a_I >= 2
         ps[:log_tau_a_I_lo] = _s_or_v(_inv_sp(0.25), n_I)  # τ = 0.25s
         ps[:log_tau_a_I_hi] = _s_or_v(_inv_sp(10.0), n_I)  # τ = 10.0s
-        ps[:log_c_I] = _s_or_v(-3.0, n_I)     # softplus(-3) ≈ 0.049
-        ps[:c_0_I] = _s_or_v(0.0, n_I)        # SFA resting setpoint (unconstrained)
+        ps[:log_c_I] = _s_or_v(-3.0, n_I)
+        ps[:c_0_I] = _s_or_v(0.0, n_I)
     end
 
     # STD parameters for E neurons
@@ -330,14 +355,14 @@ function (layer::SRNN_ODE)(S::AbstractVector, ps, st)
 
     # Adaptation derivatives
     da_E_dt = if n_a_E > 0 && !isnothing(parts.a_E)
-        τ_a_E = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
+        τ_a_E = _get_tau_a(ps, n_a_E, :E)
         (ps.c_0_E .+ r[1:n_E] .- parts.a_E) ./ τ_a_E
     else
         Float32[]
     end
 
     da_I_dt = if n_a_I > 0 && !isnothing(parts.a_I)
-        τ_a_I = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
+        τ_a_I = _get_tau_a(ps, n_a_I, :I)
         (ps.c_0_I .+ r[n_E+1:n] .- parts.a_I) ./ τ_a_I
     else
         Float32[]
@@ -399,7 +424,7 @@ function (layer::SRNN_ODE)(S::AbstractMatrix, ps, st)
     # Adaptation derivatives for E neurons
     da_E_dt = if n_a_E > 0 && !isnothing(parts.a_E)
         # τ_a_E: (1, n_a_E) or (n_E, n_a_E), need (…, 1) for batch broadcast
-        τ_a_E_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
+        τ_a_E_2d = _get_tau_a(ps, n_a_E, :E)
         τ_a_E_3 = reshape(τ_a_E_2d, size(τ_a_E_2d, 1), size(τ_a_E_2d, 2), 1)
         r_E = reshape(r[1:n_E, :], n_E, 1, B)   # (n_E, 1, B)
         c_0_E_3 = reshape(ps.c_0_E, :, 1, 1)    # broadcast: (1,1,1) or (n_E,1,1)
@@ -409,7 +434,7 @@ function (layer::SRNN_ODE)(S::AbstractMatrix, ps, st)
     end
 
     da_I_dt = if n_a_I > 0 && !isnothing(parts.a_I)
-        τ_a_I_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
+        τ_a_I_2d = _get_tau_a(ps, n_a_I, :I)
         τ_a_I_3 = reshape(τ_a_I_2d, size(τ_a_I_2d, 1), size(τ_a_I_2d, 2), 1)
         r_I = reshape(r[n_E+1:n, :], n_I, 1, B)
         c_0_I_3 = reshape(ps.c_0_I, :, 1, 1)
@@ -595,7 +620,7 @@ function _fused_srnn_step(layer::SRNN_ODE, S::AbstractVector, ps, st, Δt::Float
 
     # ── Fused a update (Eq 6): a_new = (a + (Δt/τ_a)·(c_0 + r)) / (1 + Δt/τ_a)
     a_E_new = if n_a_E > 0 && !isnothing(parts.a_E)
-        τ_a_E = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
+        τ_a_E = _get_tau_a(ps, n_a_E, :E)
         α_a_E = Δt ./ τ_a_E
         r_E = r[1:n_E]  # (n_E,)
         (parts.a_E .+ α_a_E .* (ps.c_0_E .+ r_E)) ./ (1.0f0 .+ α_a_E)
@@ -604,7 +629,7 @@ function _fused_srnn_step(layer::SRNN_ODE, S::AbstractVector, ps, st, Δt::Float
     end
 
     a_I_new = if n_a_I > 0 && !isnothing(parts.a_I)
-        τ_a_I = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
+        τ_a_I = _get_tau_a(ps, n_a_I, :I)
         α_a_I = Δt ./ τ_a_I
         r_I = r[n_E+1:n]  # (n_I,)
         (parts.a_I .+ α_a_I .* (ps.c_0_I .+ r_I)) ./ (1.0f0 .+ α_a_I)
@@ -676,7 +701,7 @@ function _fused_srnn_step(layer::SRNN_ODE, S::AbstractMatrix, ps, st, Δt::Float
 
     # ── Fused a update (E neurons)
     a_E_new = if n_a_E > 0 && !isnothing(parts.a_E)
-        τ_a_E_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_E_lo, ps.log_tau_a_E_hi, n_a_E))
+        τ_a_E_2d = _get_tau_a(ps, n_a_E, :E)
         τ_a_E_3 = reshape(τ_a_E_2d, size(τ_a_E_2d, 1), size(τ_a_E_2d, 2), 1)
         α_a_E = Δt ./ τ_a_E_3
         r_E = reshape(r[1:n_E, :], n_E, 1, B)   # (n_E, 1, B)
@@ -688,7 +713,7 @@ function _fused_srnn_step(layer::SRNN_ODE, S::AbstractMatrix, ps, st, Δt::Float
 
     # ── Fused a update (I neurons)
     a_I_new = if n_a_I > 0 && !isnothing(parts.a_I)
-        τ_a_I_2d = NNlib.softplus.(_make_tau_range(ps.log_tau_a_I_lo, ps.log_tau_a_I_hi, n_a_I))
+        τ_a_I_2d = _get_tau_a(ps, n_a_I, :I)
         τ_a_I_3 = reshape(τ_a_I_2d, size(τ_a_I_2d, 1), size(τ_a_I_2d, 2), 1)
         α_a_I = Δt ./ τ_a_I_3
         r_I = reshape(r[n_E+1:n, :], n_I, 1, B)

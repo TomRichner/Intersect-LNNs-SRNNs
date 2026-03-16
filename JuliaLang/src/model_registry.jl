@@ -20,7 +20,8 @@ Model-specific args (e.g. `n_E`, `n_a`) are read from `args` and ignored if not 
 function build_cell(model::String, n::Int, n_in::Int, args, rng)
     if model == "srnn"
         cell = SRNNCell(n, n_in, args.n_E;
-            n_a_E=args.n_a, n_b_E=args.n_b,
+            n_a_E=args.n_a_E, n_a_I=args.n_a_I,
+            n_b_E=args.n_b_E, n_b_I=args.n_b_I,
             ode_solver_unfolds=args.unfolds,
             h=args.h,
             readout=args.readout_mode,
