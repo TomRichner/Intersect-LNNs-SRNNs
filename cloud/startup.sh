@@ -56,10 +56,13 @@ echo "  Results:    ${RESULT_PATH}"
 echo "  Started:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "═══════════════════════════════════════════════════════════════"
 
-# ── Step 1: Update code ────────────────────────────────────────────
 echo ""
 echo "=== Step 1: Pulling latest code ==="
-run_as_tom "git config --global --add safe.directory /opt/srnn-repo && cd /opt/srnn-repo && git pull --ff-only" || echo "WARNING: git pull failed, using baked-in version"
+if ! run_as_tom "git config --global --add safe.directory /opt/srnn-repo && cd /opt/srnn-repo && git pull --ff-only"; then
+    echo "ERROR: git pull failed — refusing to run with stale code. Deleting VM."
+    gcloud compute instances delete "$(hostname)" --zone="${ZONE}" --quiet
+    exit 1
+fi
 echo "  Commit: $(cd /opt/srnn-repo && git rev-parse --short HEAD)"
 
 # ── Step 2: Download dataset from GCS ──────────────────────────────
