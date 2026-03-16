@@ -287,4 +287,19 @@ ps2.load_results(ps.output_dir);
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
+
+### Third-Party Code
+
+This project includes code derived from [Liquid Time-Constant Networks](https://github.com/raminmh/liquid_time_constant_networks)
+by Ramin Hasani, Mathias Lechner, Alexander Amini, Daniela Rus, and Radu Grosu,
+licensed under the **Apache License 2.0**. The derived code includes experiment
+scripts, data loading utilities, and training infrastructure in the
+`liquid_time_constant_networks/` submodule. See [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) for the full license text.
+
+**Paper citation:**
+
+> Hasani, R., Lechner, M., Amini, A., Rus, D., & Grosu, R. (2021).
+> Liquid Time-constant Networks.
+> *Proceedings of the AAAI Conference on Artificial Intelligence*, 35(9), 7657–7666.
+> https://doi.org/10.1609/aaai.v35i9.16936
