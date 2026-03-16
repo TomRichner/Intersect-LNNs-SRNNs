@@ -31,8 +31,9 @@ WAVE_SIZE=2  # seeds per wave (2 × 9 = 18 VMs < 24 limit)
 
 # Parse arguments — first positional arg is required run name
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <run_name> [--seeds N] [--epochs N] [--bs N] [--dry-run]"
+    echo "Usage: $0 <run_name> [--seeds N] [--dry-run] [extra flags for Julia scripts]"
     echo "  run_name: required label (e.g. 'prod', 'smoke20')"
+    echo "  Extra flags (--epochs, --bs, --size, --dales, etc.) are passed to launch_run.sh"
     exit 1
 fi
 
@@ -42,10 +43,9 @@ shift
 while [ $# -gt 0 ]; do
     case "$1" in
         --seeds)   MAX_SEEDS=$2; shift 2 ;;
-        --epochs)  OVERRIDE="${OVERRIDE} --epochs $2"; shift 2 ;;
-        --bs)      OVERRIDE="${OVERRIDE} --bs $2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
-        *)         echo "Unknown flag: $1"; exit 1 ;;
+        --)        shift; OVERRIDE="${OVERRIDE} $*"; break ;;
+        *)         OVERRIDE="${OVERRIDE} $1"; shift ;;
     esac
 done
 

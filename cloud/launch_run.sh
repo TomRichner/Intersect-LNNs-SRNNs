@@ -46,7 +46,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --epochs) OVERRIDE_ARGS="${OVERRIDE_ARGS} --epochs $2"; shift 2 ;;
         --bs)     OVERRIDE_ARGS="${OVERRIDE_ARGS} --bs $2"; shift 2 ;;
-        *)        echo "Unknown override: $1"; exit 1 ;;
+        --size)   OVERRIDE_ARGS="${OVERRIDE_ARGS} --size $2"; shift 2 ;;
+        *)        OVERRIDE_ARGS="${OVERRIDE_ARGS} $1"; shift ;;
     esac
 done
 
