@@ -3,12 +3,16 @@
 # launch_run.sh — Launch a single experiment VM
 # ─────────────────────────────────────────────────────────────────────
 # Usage:
-#   ./cloud/launch_run.sh <experiment> <model> <seed> [--epochs N] [--bs N]
+#   ./cloud/launch_run.sh <run_name> <experiment> <model> <seed> [--epochs N] [--bs N]
 #
 # Examples:
-#   ./cloud/launch_run.sh har srnn 1              # uses env defaults
-#   ./cloud/launch_run.sh har srnn 1 --epochs 1   # smoke test (1 epoch)
-#   ./cloud/launch_run.sh smnist srnn 3 --bs 64 --epochs 2
+#   ./cloud/launch_run.sh prod har srnn 1              # production run
+#   ./cloud/launch_run.sh smoke20 har srnn 1 --epochs 20
+#   ./cloud/launch_run.sh tuning smnist srnn 3 --bs 64 --epochs 2
+#
+# run_name: Required label for this run (e.g. 'prod', 'smoke20', 'tuning_lr001').
+#           Scopes VM names, GCS result paths, and checkpoint paths.
+#           Results go to: gs://<bucket>/results/<run_name>/<model>/<experiment>/seed<N>/
 #
 # The script:
 #   1. Reads cloud/config.env for GCP settings
@@ -19,8 +23,9 @@
 set -euo pipefail
 
 # ── Parse arguments ────────────────────────────────────────────────
-if [ $# -lt 3 ]; then
-    echo "Usage: $0 <experiment> <model> <seed> [--epochs N] [--bs N]"
+if [ $# -lt 4 ]; then
+    echo "Usage: $0 <run_name> <experiment> <model> <seed> [--epochs N] [--bs N]"
+    echo "  run_name:   required label (e.g. 'prod', 'smoke20', 'tuning_lr001')"
     echo "  experiment: har, gesture, occupancy, smnist, traffic, power, ozone, person, cheetah"
     echo "  model:      srnn, ltc"
     echo "  seed:       1-5"
@@ -29,10 +34,11 @@ if [ $# -lt 3 ]; then
     exit 1
 fi
 
-EXPERIMENT=$1
-MODEL=$2
-SEED=$3
-shift 3
+RUN_NAME=$1
+EXPERIMENT=$2
+MODEL=$3
+SEED=$4
+shift 4
 
 # Parse optional overrides
 OVERRIDE_ARGS=""
@@ -63,7 +69,7 @@ if [ -n "${OVERRIDE_ARGS}" ]; then
 fi
 
 # ── Determine VM name and machine type ─────────────────────────────
-VM_NAME="${MODEL}-${EXPERIMENT_NAME}-seed${SEED}"
+VM_NAME="${RUN_NAME}-${MODEL}-${EXPERIMENT_NAME}-seed${SEED}"
 VM_MACHINE="${MACHINE_TYPE:-${GCP_MACHINE_TYPE}}"
 
 # ── Check quota before launching ───────────────────────────────────
@@ -84,9 +90,9 @@ if gcloud compute instances describe "${VM_NAME}" --zone="${GCP_ZONE}" &>/dev/nu
 fi
 
 # ── Check if results already exist ─────────────────────────────────
-RESULT_PATH="${GCS_BUCKET}/results/${MODEL}/${EXPERIMENT_NAME}/seed${SEED}/final_metrics.json"
-if gsutil -q stat "${RESULT_PATH}" 2>/dev/null; then
-    echo "WARNING: Results already exist for ${MODEL}/${EXPERIMENT_NAME}/seed${SEED}"
+RESULT_CHECK="${GCS_BUCKET}/results/${RUN_NAME}/${MODEL}/${EXPERIMENT_NAME}/seed${SEED}/training_log.txt"
+if gsutil -q stat "${RESULT_CHECK}" 2>/dev/null; then
+    echo "WARNING: Results already exist for ${RUN_NAME}/${MODEL}/${EXPERIMENT_NAME}/seed${SEED}"
     read -p "  Overwrite? (y/N): " CONFIRM
     if [ "${CONFIRM}" != "y" ]; then
         echo "  Skipping."
@@ -119,7 +125,7 @@ gcloud compute instances create "${VM_NAME}" \
     --boot-disk-size=30GB \
     --no-address \
     ${SPOT_FLAGS} \
-    --metadata="experiment=${EXPERIMENT_NAME},model=${MODEL},seed=${SEED},train-script=${TRAIN_SCRIPT},train-args=${ARGS},gcs-bucket=${GCS_BUCKET}" \
+    --metadata="run-name=${RUN_NAME},experiment=${EXPERIMENT_NAME},model=${MODEL},seed=${SEED},train-script=${TRAIN_SCRIPT},train-args=${ARGS},gcs-bucket=${GCS_BUCKET}" \
     --metadata-from-file=startup-script="${SCRIPT_DIR}/startup.sh" \
     --scopes=storage-full,compute-rw
 

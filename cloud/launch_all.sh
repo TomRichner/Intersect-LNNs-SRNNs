@@ -3,10 +3,10 @@
 # launch_all.sh — Launch all experiments × all seeds (batched for quota)
 # ─────────────────────────────────────────────────────────────────────
 # Usage:
-#   ./cloud/launch_all.sh                    # all experiments, seeds 1-5
-#   ./cloud/launch_all.sh --seeds 3          # seeds 1-3 only
-#   ./cloud/launch_all.sh --epochs 10        # override epochs
-#   ./cloud/launch_all.sh --dry-run          # print what would launch
+#   ./cloud/launch_all.sh <run_name>                    # all experiments, seeds 1-5
+#   ./cloud/launch_all.sh <run_name> --seeds 3          # seeds 1-3 only
+#   ./cloud/launch_all.sh <run_name> --epochs 10        # override epochs
+#   ./cloud/launch_all.sh <run_name> --dry-run          # print what would launch
 #
 # Quota: 24 VMs max, 64 vCPUs max.
 # With 9 experiments × 2 vCPUs each, we can fit 2 seeds per wave
@@ -29,7 +29,16 @@ DRY_RUN=false
 MAX_VMS=24
 WAVE_SIZE=2  # seeds per wave (2 × 9 = 18 VMs < 24 limit)
 
-# Parse arguments
+# Parse arguments — first positional arg is required run name
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <run_name> [--seeds N] [--epochs N] [--bs N] [--dry-run]"
+    echo "  run_name: required label (e.g. 'prod', 'smoke20')"
+    exit 1
+fi
+
+RUN_NAME=$1
+shift
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --seeds)   MAX_SEEDS=$2; shift 2 ;;
@@ -46,7 +55,7 @@ MODEL=srnn
 TOTAL_VMS=$(( ${#EXPERIMENTS[@]} * MAX_SEEDS ))
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Full Experiment Launch"
+echo "  Full Experiment Launch: ${RUN_NAME}"
 echo "  Experiments:  ${#EXPERIMENTS[@]}"
 echo "  Seeds:        1-${MAX_SEEDS}"
 echo "  Total VMs:    ${TOTAL_VMS}"
@@ -62,7 +71,7 @@ wait_for_slots() {
     local max_running=$1
     while true; do
         RUNNING=$(gcloud compute instances list \
-            --filter="name~'^srnn-' AND status=RUNNING" \
+            --filter="name~'^${RUN_NAME}-' AND status=RUNNING" \
             --format="value(name)" 2>/dev/null | wc -l | tr -d ' ')
         if [ "${RUNNING}" -lt "${max_running}" ]; then
             return
@@ -100,10 +109,10 @@ while [ ${SEED} -le ${MAX_SEEDS} ]; do
     for s in $(seq ${SEED} ${WAVE_END}); do
         for exp in "${EXPERIMENTS[@]}"; do
             if [ "${DRY_RUN}" = true ]; then
-                echo "  [dry-run] launch_run.sh ${exp} ${MODEL} ${s} ${OVERRIDE}"
+                echo "  [dry-run] launch_run.sh ${RUN_NAME} ${exp} ${MODEL} ${s} ${OVERRIDE}"
             else
                 echo "── Launching ${exp} seed ${s}..."
-                if "${SCRIPT_DIR}/launch_run.sh" "${exp}" "${MODEL}" "${s}" ${OVERRIDE}; then
+                if "${SCRIPT_DIR}/launch_run.sh" "${RUN_NAME}" "${exp}" "${MODEL}" "${s}" ${OVERRIDE}; then
                     LAUNCHED=$((LAUNCHED + 1))
                 else
                     echo "  ⚠ FAILED: ${exp} seed ${s}"
@@ -125,5 +134,5 @@ if [ "${DRY_RUN}" = true ]; then
 else
     echo "  All waves launched: ${LAUNCHED} succeeded, ${FAILED} failed"
 fi
-echo "  Monitor: gcloud compute instances list --filter=\"name~'^srnn-'\""
+echo "  Monitor: gcloud compute instances list --filter=\"name~'^${RUN_NAME}-'\""
 echo "═══════════════════════════════════════════════════════════════"

@@ -3,16 +3,18 @@
 # monitor.sh — Check experiment status, quota usage, and results
 # ─────────────────────────────────────────────────────────────────────
 # Usage:
-#   ./cloud/monitor.sh              # show everything
-#   ./cloud/monitor.sh har srnn     # show just har/srnn results
+#   ./cloud/monitor.sh <run_name>              # show all results for a run
+#   ./cloud/monitor.sh <run_name> har srnn     # show just har/srnn results
+#   ./cloud/monitor.sh                         # show all VMs + quota (no results)
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.env"
 
-FILTER_EXP="${1:-}"
-FILTER_MODEL="${2:-}"
+RUN_NAME="${1:-}"
+FILTER_EXP="${2:-}"
+FILTER_MODEL="${3:-}"
 
 # ── vCPU Quota ─────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════════"
@@ -39,7 +41,7 @@ REGIONAL_LIMIT=$(echo "${REGIONAL_INFO}" | cut -d',' -f2)
 
 echo "  Global:   ${GLOBAL_USAGE} / ${GLOBAL_LIMIT} vCPUs  ← binding limit"
 echo "  Regional: ${REGIONAL_USAGE} / ${REGIONAL_LIMIT} vCPUs (us-central1)"
-echo "  Can launch ${MAX_VMS} more e2-highmem-2 VMs"
+echo "  Can launch ${MAX_VMS} more n4d-highmem-2 VMs"
 echo ""
 
 # ── Running VMs ────────────────────────────────────────────────────
@@ -47,8 +49,14 @@ echo "════════════════════════�
 echo "  Running VMs"
 echo "═══════════════════════════════════════════════════════════════"
 
+if [ -n "${RUN_NAME}" ]; then
+    VM_FILTER="name~'^${RUN_NAME}-' AND status=RUNNING"
+else
+    VM_FILTER="status=RUNNING"
+fi
+
 VM_LIST=$(gcloud compute instances list \
-    --filter="status=RUNNING" \
+    --filter="${VM_FILTER}" \
     --format="table(name,machineType.basename(),zone.basename(),status,creationTimestamp.date())" \
     2>/dev/null)
 
@@ -57,13 +65,19 @@ VM_COUNT=$(echo "${VM_LIST}" | tail -n +2 | wc -l | tr -d ' ')
 if [ "${VM_COUNT}" -gt 0 ]; then
     echo "${VM_LIST}"
 else
-    echo "  No running VMs."
+    echo "  No running VMs${RUN_NAME:+ for run '${RUN_NAME}'}."
 fi
 echo ""
 
 # ── Results in GCS ─────────────────────────────────────────────────
+if [ -z "${RUN_NAME}" ]; then
+    echo "  (Specify a run name to see GCS results)"
+    echo ""
+    exit 0
+fi
+
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Results in GCS"
+echo "  Results in GCS — run: ${RUN_NAME}"
 echo "═══════════════════════════════════════════════════════════════"
 
 MODELS=("srnn" "ltc")
@@ -88,15 +102,19 @@ for model in "${MODELS[@]}"; do
 
         for seed in $(seq 1 ${N}); do
             SEEDS_TOTAL=$((SEEDS_TOTAL + 1))
-            RESULT="${GCS_BUCKET}/results/${model}/${exp}/seed${seed}/final_metrics.json"
+            RESULT="${GCS_BUCKET}/results/${RUN_NAME}/${model}/${exp}/seed${seed}/training_log.txt"
 
             if gsutil -q stat "${RESULT}" 2>/dev/null; then
                 STATUS_LINE="${STATUS_LINE} ✅${seed}"
                 SEEDS_DONE=$((SEEDS_DONE + 1))
-            elif gsutil -q stat "${GCS_BUCKET}/results/${model}/${exp}/seed${seed}/training_log.txt" 2>/dev/null; then
-                STATUS_LINE="${STATUS_LINE} ⏳${seed}"
             else
-                STATUS_LINE="${STATUS_LINE} ·${seed}"
+                # Check if VM is running for this seed
+                VM_CHECK="${RUN_NAME}-${model}-${exp}-seed${seed}"
+                if gcloud compute instances describe "${VM_CHECK}" --zone="${GCP_ZONE}" &>/dev/null 2>&1; then
+                    STATUS_LINE="${STATUS_LINE} ⏳${seed}"
+                else
+                    STATUS_LINE="${STATUS_LINE} ·${seed}"
+                fi
             fi
         done
 
@@ -114,5 +132,5 @@ for model in "${MODELS[@]}"; do
 done
 
 echo ""
-echo "  Legend: ✅=done  ⏳=in progress  ·=not started"
+echo "  Legend: ✅=done  ⏳=running  ·=not started"
 echo ""

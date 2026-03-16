@@ -29,10 +29,11 @@ SEED=$(get_meta seed)
 TRAIN_SCRIPT=$(get_meta train-script)
 TRAIN_ARGS=$(get_meta train-args)
 GCS_BUCKET=$(get_meta gcs-bucket)
+RUN_NAME=$(get_meta run-name)
 VM_NAME=$(curl -s "${META_URL}/name" -H "${META_HEADER}")
 VM_ZONE=$(curl -s "${META_URL}/zone" -H "${META_HEADER}" | awk -F/ '{print $NF}')
 
-RESULT_PATH="${GCS_BUCKET}/results/${MODEL}/${EXPERIMENT}/seed${SEED}"
+RESULT_PATH="${GCS_BUCKET}/results/${RUN_NAME}/${MODEL}/${EXPERIMENT}/seed${SEED}"
 CHECKPOINT_DIR="/tmp/checkpoints"
 LOG_FILE="/tmp/training.log"
 
@@ -44,6 +45,7 @@ echo "════════════════════════�
 echo "  SRNN Cloud Experiment Runner"
 echo "═══════════════════════════════════════════════════════════════"
 echo "  VM:         ${VM_NAME}"
+echo "  Run:        ${RUN_NAME}"
 echo "  Experiment: ${EXPERIMENT}"
 echo "  Model:      ${MODEL}"
 echo "  Seed:       ${SEED}"
@@ -74,7 +76,7 @@ ls -lh "${DATASET_DIR}/"
 # ── Step 3: Check for existing checkpoint (Spot VM resume) ─────────
 echo ""
 echo "=== Step 3: Checking for existing checkpoint ==="
-CHECKPOINT_GCS="${GCS_BUCKET}/checkpoints/${MODEL}-${EXPERIMENT}-seed${SEED}"
+CHECKPOINT_GCS="${GCS_BUCKET}/checkpoints/${RUN_NAME}/${MODEL}-${EXPERIMENT}-seed${SEED}"
 RESUME_FLAG=""
 mkdir -p "${CHECKPOINT_DIR}"
 chmod 777 "${CHECKPOINT_DIR}"

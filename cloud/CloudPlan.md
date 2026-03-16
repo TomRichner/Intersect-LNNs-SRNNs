@@ -203,51 +203,59 @@ the same pattern as `train_har_srnn.jl`:
 
 ### Phase 3 — Launch & Monitor
 
+All commands require a **run name** as the first argument. This scopes VM names,
+GCS result paths, and checkpoint paths so different runs never collide.
+
 #### Step 3.1: `launch_run.sh` — Launch a single run
 ```
-./cloud/launch_run.sh <experiment> <model> <seed>
+./cloud/launch_run.sh <run_name> <experiment> <model> <seed> [--epochs N]
 # Example:
-./cloud/launch_run.sh har srnn 1
+./cloud/launch_run.sh prod har srnn 1
+./cloud/launch_run.sh smoke20 gesture srnn 1 --epochs 20
 ```
-- Reads `cloud/experiments/har.env` for args
-- Reads `cloud/config.env` for GCP settings
-- Creates a VM named `srnn-har-seed1` with the startup script
-- VM metadata carries: experiment name, seed, training args, GCS paths
+- Creates a VM named `<run>-<model>-<experiment>-seed<N>` (e.g. `prod-srnn-har-seed1`)
+- Results go to: `gs://<bucket>/results/<run>/<model>/<experiment>/seed<N>/`
+- VM metadata carries: run name, experiment, seed, training args, GCS paths
 
 #### Step 3.2: `launch_batch.sh` — Launch all seeds for an experiment
 ```
-./cloud/launch_batch.sh har srnn
-# Creates 5 VMs: srnn-har-seed1 through srnn-har-seed5
+./cloud/launch_batch.sh <run_name> <experiment> <model>
+# Example:
+./cloud/launch_batch.sh prod har srnn
+# Creates 5 VMs: prod-srnn-har-seed1 through prod-srnn-har-seed5
 ```
 
-#### Step 3.3: `monitor.sh` — Check run status and quota usage
+#### Step 3.3: `launch_all.sh` — Launch all experiments in waves
 ```
-./cloud/monitor.sh
-# Output:
-#   === vCPU Quota ===
-#   USED: 10 / 64  (5 VMs × 2 vCPU)
-#   AVAILABLE: 54  (can launch 27 more e2-highmem-2)
-#
-#   === Running VMs ===
-#   NAME              STATUS     MACHINE         ZONE
-#   srnn-har-seed1    RUNNING    e2-highmem-2    us-central1-a
-#   srnn-har-seed2    RUNNING    e2-highmem-2    us-central1-a
-#   ...
-#
-#   === Results in GCS ===
-#   srnn/har/seed1:  ✅ final_metrics.json found
-#   srnn/har/seed2:  ⏳ training in progress
-#   srnn/har/seed3:  ❌ no results yet
+./cloud/launch_all.sh <run_name> [--seeds N] [--epochs N] [--dry-run]
+# Example:
+./cloud/launch_all.sh prod                     # full 5-seed run
+./cloud/launch_all.sh prod --dry-run            # preview without launching
 ```
-Key features:
-- Shows vCPU quota usage vs limit (64 max) to avoid launch failures
-- Lists all running VMs with status
-- Checks GCS bucket for completed results per experiment/seed
 
-#### Step 3.4: `collect_results.sh` — Aggregate results
+#### Step 3.4: `smoke_test.sh` — Quick validation (seed 1 only)
 ```
-./cloud/collect_results.sh har srnn
+./cloud/smoke_test.sh --run <name> [--epochs N]
+# Example:
+./cloud/smoke_test.sh --run smoke20 --epochs 20
+```
+
+#### Step 3.5: `monitor.sh` — Check run status and quota usage
+```
+./cloud/monitor.sh <run_name>              # show VMs + GCS results for a run
+./cloud/monitor.sh                         # show all VMs + quota only
+```
+
+#### Step 3.6: `collect_results.sh` — Aggregate results
+```
+./cloud/collect_results.sh <run_name>
 # Downloads results from GCS, computes mean ± std across seeds
+```
+
+#### Cleanup
+```bash
+# Delete all results for an exploratory run:
+gcloud storage rm -r gs://liquidneuralnets-experiments/results/smoke20/
 ```
 
 ### Phase 4 — Repeat with LTC model
@@ -259,7 +267,7 @@ Once SRNN experiments are validated, repeat with `ltc1.jl` training scripts.
 ## GCS Bucket Layout
 
 ```
-gs://srnn-experiments/
+gs://liquidneuralnets-experiments/
 ├── datasets/
 │   ├── har/UCI HAR Dataset/         # uploaded once
 │   ├── gesture/                     # uploaded once
@@ -271,20 +279,24 @@ gs://srnn-experiments/
 │   ├── person/                      # uploaded once
 │   └── cheetah/                     # uploaded once
 ├── results/
-│   ├── srnn/
-│   │   ├── har/
-│   │   │   ├── seed1/
-│   │   │   │   ├── training_log.txt
-│   │   │   │   ├── best_checkpoint.jld2
-│   │   │   │   └── final_metrics.json
-│   │   │   ├── seed2/
-│   │   │   └── ...
-│   │   ├── gesture/
-│   │   └── ...
+│   ├── smoke20/                     # run name scopes all results
+│   │   └── srnn/
+│   │       ├── har/seed1/
+│   │       │   ├── training_log.txt
+│   │       │   └── srnn_har_best.jld2
+│   │       ├── gesture/seed1/
+│   │       └── ...
+│   ├── prod/                        # production run
+│   │   └── srnn/
+│   │       ├── har/seed1/ ... seed5/
+│   │       ├── gesture/seed1/ ... seed5/
+│   │       └── ...
 │   └── ltc/
 │       └── (same structure)
 └── checkpoints/                     # transient, for Spot VM resume
-    └── srnn-har-seed1/
+    ├── smoke20/srnn-har-seed1/
+    │   └── latest.jld2
+    └── prod/srnn-har-seed1/
         └── latest.jld2
 ```
 
