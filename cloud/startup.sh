@@ -94,7 +94,7 @@ fi
 # ── Step 4: Run training ───────────────────────────────────────────
 echo ""
 echo "=== Step 4: Starting training ==="
-JULIA_CMD="cd /opt/srnn-repo && stdbuf -oL julia --project=JuliaLang ${TRAIN_SCRIPT} --seed ${SEED} --save ${CHECKPOINT_DIR} ${TRAIN_ARGS} ${RESUME_FLAG}"
+JULIA_CMD="cd /opt/srnn-repo && stdbuf -oL julia --project=JuliaLang ${TRAIN_SCRIPT} --model ${MODEL} --seed ${SEED} --save ${CHECKPOINT_DIR} ${TRAIN_ARGS} ${RESUME_FLAG}"
 echo "  Command: ${JULIA_CMD}"
 echo ""
 

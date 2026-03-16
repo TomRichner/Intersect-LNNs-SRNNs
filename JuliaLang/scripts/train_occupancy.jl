@@ -1,10 +1,10 @@
-# train_har.jl — HAR classification with configurable model (batched BPTT via Zygote)
+# train_occupancy.jl — Occupancy Detection with configurable model (batched BPTT via Zygote)
 #
-# Adapted from: train_har.jl (LTCODE1 version)
+# Adapted from: train_har_srnn.jl
 # Supports: srnn, ltc (via --model flag).
 #
 # Usage:
-#   julia --project=JuliaLang JuliaLang/scripts/train_har.jl [--epochs 50] [--size 32] [--lr 0.01] [--bs 16]
+#   julia --project=JuliaLang JuliaLang/scripts/train_occupancy.jl [--epochs 200] [--size 32] [--lr 0.01] [--bs 256]
 #
 # Model selection:
 #   --model <name>     Model type: srnn, ltc (required)
@@ -26,7 +26,8 @@
 #   --save_every <int> Save periodic checkpoint every N epochs (default: 5)
 #   --warmup <int>     LR warmup epochs: ramp from lr/10 to lr (default: 0 = off)
 
-using Random, Statistics, DelimitedFiles, Printf
+using Random, Statistics, Printf
+using CSV, DataFrames
 using Lux, NNlib, Zygote, Optimisers
 using JLD2
 
@@ -36,16 +37,16 @@ include(joinpath(@__DIR__, "..", "src", "training_utils.jl"))
 
 # ── Configuration ───────────────────────────────────────────────────────
 const SEQ_LEN    = 16
-const N_FEATURES = 561
-const N_CLASSES  = 6
+const N_FEATURES = 5     # Temperature, Humidity, Light, CO2, HumidityRatio
+const N_CLASSES  = 2     # Occupied / Not Occupied
 
 # Parse simple command-line args
 function parse_args()
     model = ""
-    epochs = 50
+    epochs = 200
     model_size = 32
     lr = 0.01f0
-    batch_size = 16
+    batch_size = 256
     n_E = -1  # sentinel: will default to model_size ÷ 2
     n_a = 3
     n_b = 0
@@ -115,7 +116,7 @@ function parse_args()
 end
 
 # ═══════════════════════════════════════════════════════════════════════
-# DATA LOADING (identical to train_har.jl)
+# DATA LOADING
 # ═══════════════════════════════════════════════════════════════════════
 
 function cut_in_sequences(x::Matrix, y::Vector, seq_len::Int; inc::Int=1)
@@ -132,12 +133,12 @@ function cut_in_sequences(x::Matrix, y::Vector, seq_len::Int; inc::Int=1)
         start = s + 1  # Julia 1-indexed
         stop = start + seq_len - 1
         seqs_x[:, :, idx] .= Float32.(x[start:stop, :]')   # transpose: (features, seq_len)
-        seqs_y[:, idx] .= y[start:stop]                      # (seq_len,)
+        seqs_y[:, idx] .= y[start:stop]
     end
     return seqs_x, seqs_y
 end
 
-struct HarData
+struct OccupancyData
     train_x::Array{Float32, 3}    # (features, seq_len, N_train)
     train_y::Matrix{Int}          # (seq_len, N_train)
     valid_x::Array{Float32, 3}    # (features, seq_len, N_valid)
@@ -146,22 +147,46 @@ struct HarData
     test_y::Matrix{Int}           # (seq_len, N_test)
 end
 
-function load_har_data(; data_dir=joinpath(@__DIR__, "..", "data", "har", "UCI HAR Dataset"))
-    println("Loading HAR data from: $data_dir")
+function read_occupancy_csv(filepath::String)
+    # The CSV has 7 header columns but 8 data columns (extra leading row index).
+    # This shifts all column names by one position in CSV.jl's parsing.
+    # So we read by column position: cols 3-7 = sensor data, col 8 = occupancy.
+    df = CSV.read(filepath, DataFrame; silencewarnings=true)
+    ncols = ncol(df)
 
-    # Load raw data
-    train_x_raw = readdlm(joinpath(data_dir, "train", "X_train.txt"), Float64)
-    train_y_raw = Int.(vec(readdlm(joinpath(data_dir, "train", "y_train.txt"), Int)))
-    # Labels are 1-6 in file; keep as-is for Julia 1-indexing
-    test_x_raw = readdlm(joinpath(data_dir, "test", "X_test.txt"), Float64)
-    test_y_raw = Int.(vec(readdlm(joinpath(data_dir, "test", "y_test.txt"), Int)))
+    # Columns 3-7 are the actual sensor values (Temperature, Humidity, Light, CO2, HumidityRatio)
+    x = Float64.(Matrix(df[:, 3:7]))
+    # Last column is Occupancy (0 or 1) → add 1 for Julia 1-indexing (1 or 2)
+    y = Int.(df[:, ncols]) .+ 1
+    return x, y
+end
 
-    println("  Raw train: $(size(train_x_raw, 1)) samples × $(size(train_x_raw, 2)) features")
-    println("  Raw test:  $(size(test_x_raw, 1)) samples × $(size(test_x_raw, 2)) features")
+function load_occupancy_data(; data_dir=joinpath(@__DIR__, "..", "data", "occupancy"))
+    println("Loading Occupancy data from: $data_dir")
 
-    # Window into sequences — now returns 3D arrays
+    # Load the 3 CSV files
+    train_x_raw, train_y_raw = read_occupancy_csv(joinpath(data_dir, "datatraining.txt"))
+    test0_x_raw, test0_y_raw = read_occupancy_csv(joinpath(data_dir, "datatest.txt"))
+    test1_x_raw, test1_y_raw = read_occupancy_csv(joinpath(data_dir, "datatest2.txt"))
+
+    println("  Train: $(size(train_x_raw, 1)) samples × $(size(train_x_raw, 2)) features")
+    println("  Test0: $(size(test0_x_raw, 1)) samples, Test1: $(size(test1_x_raw, 1)) samples")
+
+    # Z-score normalization (fit on train only)
+    mean_x = mean(train_x_raw, dims=1)
+    std_x  = std(train_x_raw, dims=1)
+    train_x_raw = (train_x_raw .- mean_x) ./ std_x
+    test0_x_raw = (test0_x_raw .- mean_x) ./ std_x
+    test1_x_raw = (test1_x_raw .- mean_x) ./ std_x
+
+    # Window into sequences
     train_seqs_x, train_seqs_y = cut_in_sequences(train_x_raw, train_y_raw, SEQ_LEN; inc=1)
-    test_seqs_x, test_seqs_y = cut_in_sequences(test_x_raw, test_y_raw, SEQ_LEN; inc=8)
+    test0_seqs_x, test0_seqs_y = cut_in_sequences(test0_x_raw, test0_y_raw, SEQ_LEN; inc=8)
+    test1_seqs_x, test1_seqs_y = cut_in_sequences(test1_x_raw, test1_y_raw, SEQ_LEN; inc=8)
+
+    # Concatenate both test sets
+    test_seqs_x = cat(test0_seqs_x, test1_seqs_x; dims=3)
+    test_seqs_y = cat(test0_seqs_y, test1_seqs_y; dims=2)
 
     println("  Total training sequences: $(size(train_seqs_x, 3))")
     println("  Total test sequences:     $(size(test_seqs_x, 3))")
@@ -176,7 +201,7 @@ function load_har_data(; data_dir=joinpath(@__DIR__, "..", "data", "har", "UCI H
 
     println("  Validation split: $n_valid, training split: $(length(train_idx))")
 
-    return HarData(
+    return OccupancyData(
         train_seqs_x[:, :, train_idx], train_seqs_y[:, train_idx],
         train_seqs_x[:, :, valid_idx], train_seqs_y[:, valid_idx],
         test_seqs_x, test_seqs_y,
@@ -218,15 +243,10 @@ function forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
 end
 
 # ── Batched cross-entropy loss ──────────────────────────────────────────
-# Stable vectorized cross-entropy over the batch
 function batch_loss(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch, y_labels)
     logits = forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
     # logits: (N_CLASSES, B), y_labels: (B,) — last time step labels, 1-indexed
-
-    # log-softmax along class dimension (dim=1)
     log_probs = logits .- logsumexp_batch(logits)  # (N_CLASSES, B)
-
-    # Gather the log-prob for the correct class per sample
     B = length(y_labels)
     loss = zero(eltype(logits))
     for i in 1:B
@@ -239,12 +259,6 @@ end
 function logsumexp_batch(x::AbstractMatrix)
     m = maximum(x, dims=1)   # (1, B)
     return m .+ log.(sum(exp.(x .- m), dims=1))  # (1, B)
-end
-
-# Keep the vector version for backward compatibility
-function logsumexp(x::AbstractVector)
-    m = maximum(x)
-    return m + log(sum(exp.(x .- m)))
 end
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -322,8 +336,8 @@ end
 # TRAINING
 # ═══════════════════════════════════════════════════════════════════════
 
-function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
-                epochs::Int=50, lr::Float32=0.01f0, batch_size::Int=16,
+function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::OccupancyData;
+                epochs::Int=200, lr::Float32=0.01f0, batch_size::Int=256,
                 start_epoch::Int=0, initial_opt_state=nothing,
                 initial_best_valid_acc::Float32=0.0f0,
                 save_dir::String="checkpoints", save_every::Int=5,
@@ -335,7 +349,6 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
     # Set up optimizer (or use resumed state)
     if initial_opt_state !== nothing
         opt_state = initial_opt_state
-        # Update learning rate in the existing optimizer state
         Optimisers.adjust!(opt_state, lr)
         println("  Resumed optimizer state, adjusted LR to $lr")
     else
@@ -361,15 +374,13 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
                                        st_cell, st_head, data.test_x, data.test_y)
 
         # ── Model selection (by valid accuracy) ─────────────────────
-        # Save BEFORE training so the checkpoint contains the params that
-        # actually produced this validation accuracy.
         if valid_acc > best_valid_acc && epoch > start_epoch
             best_valid_acc = valid_acc
             best_params = deepcopy(params)
             best_epoch = epoch
             best_stats = (0.0f0, 0.0f0, valid_loss, valid_acc, test_loss, test_acc)
             # Save best checkpoint
-            best_path = joinpath(save_dir, "$(args.model)_har_best.jld2")
+            best_path = joinpath(save_dir, "$(args.model)_occupancy_best.jld2")
             save_checkpoint(best_path, best_params, opt_state, epoch,
                             best_valid_acc, args)
         end
@@ -400,7 +411,7 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
             opt_state, params = Optimisers.update(opt_state, params, grads[1])
             push!(epoch_losses, loss_val)
 
-            # Track accuracy from the same forward pass direction (cheap — no gradient)
+            # Track accuracy from the same forward pass direction
             logits = forward_batch(cell, head, params.cell, params.head,
                                     st_cell, st_head, x_batch)
             preds = vec(getindex.(argmax(logits, dims=1), 1))
@@ -411,10 +422,9 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
         train_loss = mean(epoch_losses)
         train_acc = epoch_correct / max(epoch_total, 1)
 
-
         # ── Periodic checkpoint ──────────────────────────────────────
         if save_every > 0 && epoch > start_epoch && epoch % save_every == 0
-            periodic_path = joinpath(save_dir, "$(args.model)_har_epoch_$(lpad(epoch, 3, '0')).jld2")
+            periodic_path = joinpath(save_dir, "$(args.model)_occupancy_epoch_$(lpad(epoch, 3, '0')).jld2")
             save_checkpoint(periodic_path, params, opt_state, epoch,
                             best_valid_acc, args)
         end
@@ -448,7 +458,7 @@ end
 
 function main()
     args = parse_args()
-    println("HAR Training — $(uppercase(args.model)) ($(args.solver), batched BPTT)")
+    println("Occupancy Training — $(uppercase(args.model)) ($(args.solver), batched BPTT)")
     println("  Model: $(args.model), size: $(args.model_size)")
     println("  per_neuron: $(args.per_neuron)")
     println("  SFA timescales (n_a_E): $(args.n_a), STD (n_b_E): $(args.n_b)")
@@ -466,7 +476,7 @@ function main()
     println("  Random seed: $(args.seed)")
 
     # Load data
-    data = load_har_data()
+    data = load_occupancy_data()
 
     # Build model
     cell, head, ps_cell, st_cell, ps_head, st_head = build_model(args, rng)
@@ -482,7 +492,7 @@ function main()
         ps_cell = ckpt.params.cell
         ps_head = ckpt.params.head
         initial_opt_state = ckpt.opt_state
-        start_epoch = ckpt.epoch + 1  # start from next epoch
+        start_epoch = ckpt.epoch + 1
         initial_best_valid_acc = Float32(ckpt.best_valid_acc)
         println("  Loaded epoch $(ckpt.epoch), best valid acc: $(round(ckpt.best_valid_acc * 100; digits=2))%")
         println("  Resuming from epoch $start_epoch with LR $(args.lr)")
@@ -507,7 +517,7 @@ function main()
         test_loss, test_grads = Zygote.withgradient((cell=ps_cell, head=ps_head)) do p
             batch_loss(cell, head, p.cell, p.head, st_cell, st_head, test_x, test_y)
         end
-        println("  Initial loss: $(@sprintf("%.4f", test_loss)) (expected ~1.79 = -log(1/6))")
+        println("  Initial loss: $(@sprintf("%.4f", test_loss)) (expected ~0.69 = -log(1/2))")
 
         # Check gradients are non-nothing
         cell_grad = test_grads[1].cell

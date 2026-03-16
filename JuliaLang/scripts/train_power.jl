@@ -1,10 +1,11 @@
-# train_har.jl — HAR classification with configurable model (batched BPTT via Zygote)
+# train_power.jl — Household Power Consumption with configurable model (batched BPTT via Zygote)
 #
-# Adapted from: train_har.jl (LTCODE1 version)
-# Supports: srnn, ltc (via --model flag).
+# Adapted from: power.py (Hasani et al.)
+# Regression: predict Global_active_power from 6 electrical measurements.
+# MSE loss, MAE metric, Dense(1) head at every timestep.
 #
 # Usage:
-#   julia --project=JuliaLang JuliaLang/scripts/train_har.jl [--epochs 50] [--size 32] [--lr 0.01] [--bs 16]
+#   julia --project=JuliaLang JuliaLang/scripts/train_power.jl [--epochs 200] [--size 32] [--lr 0.01] [--bs 256]
 #
 # Model selection:
 #   --model <name>     Model type: srnn, ltc (required)
@@ -26,7 +27,7 @@
 #   --save_every <int> Save periodic checkpoint every N epochs (default: 5)
 #   --warmup <int>     LR warmup epochs: ramp from lr/10 to lr (default: 0 = off)
 
-using Random, Statistics, DelimitedFiles, Printf
+using Random, Statistics, Printf
 using Lux, NNlib, Zygote, Optimisers
 using JLD2
 
@@ -35,18 +36,18 @@ include(joinpath(@__DIR__, "..", "src", "model_registry.jl"))
 include(joinpath(@__DIR__, "..", "src", "training_utils.jl"))
 
 # ── Configuration ───────────────────────────────────────────────────────
-const SEQ_LEN    = 16
-const N_FEATURES = 561
-const N_CLASSES  = 6
+const SEQ_LEN    = 32
+const N_FEATURES = 6      # 6 electrical measurement columns (after target split)
+const N_OUT      = 1      # regression: predict Global_active_power
 
 # Parse simple command-line args
 function parse_args()
     model = ""
-    epochs = 50
+    epochs = 200
     model_size = 32
     lr = 0.01f0
-    batch_size = 16
-    n_E = -1  # sentinel: will default to model_size ÷ 2
+    batch_size = 256
+    n_E = -1
     n_a = 3
     n_b = 0
     unfolds = 6
@@ -100,7 +101,6 @@ function parse_args()
         end
     end
 
-    # Default n_E to half of model_size
     if n_E < 0
         n_E = model_size ÷ 2
     end
@@ -115,71 +115,132 @@ function parse_args()
 end
 
 # ═══════════════════════════════════════════════════════════════════════
-# DATA LOADING (identical to train_har.jl)
+# DATA LOADING
 # ═══════════════════════════════════════════════════════════════════════
 
-function cut_in_sequences(x::Matrix, y::Vector, seq_len::Int; inc::Int=1)
+"""
+    load_power_trace(filepath) → (x::Matrix{Float32}, y::Vector{Float32})
+
+Load the UCI Household Power Consumption dataset.
+Format: semicolon-delimited, header row, 9 columns:
+  Date;Time;Global_active_power;Global_reactive_power;Voltage;
+  Global_intensity;Sub_metering_1;Sub_metering_2;Sub_metering_3
+
+- Skips Date (col 1) and Time (col 2)
+- 7 float columns (cols 3-9), '?' values forward-filled
+- Per-feature z-score normalization
+- Column 0 (Global_active_power) → target y
+- Columns 1-6 → features x
+"""
+function load_power_trace(filepath::String)
+    all_x = Vector{Vector{Float32}}()
+    memory = zeros(Float32, 7)  # forward-fill memory for 7 measurement cols
+
+    open(filepath) do f
+        lineno = 0
+        for line in eachline(f)
+            lineno += 1
+            lineno == 1 && continue  # skip header
+
+            parts = split(strip(line), ';')
+            length(parts) >= 8 || continue
+
+            # Parse 7 measurement columns (indices 3-9 in Python, parts[3:end] here)
+            feature_col = parts[3:end]  # 7 values
+            length(feature_col) >= 7 || continue
+
+            vals = Vector{Float32}(undef, 7)
+            for i in 1:7
+                s = strip(feature_col[i])
+                if s == "?" || s == ""
+                    vals[i] = memory[i]  # forward-fill
+                else
+                    vals[i] = parse(Float32, s)
+                    memory[i] = vals[i]
+                end
+            end
+
+            push!(all_x, vals)
+        end
+    end
+
+    println("  Read $(length(all_x)) samples")
+
+    # Stack into matrix (N × 7)
+    x = reduce(hcat, all_x)'  # N × 7
+
+    # Per-feature z-score normalization
+    col_means = mean(x, dims=1)
+    col_stds = std(x, dims=1)
+    x = (x .- col_means) ./ col_stds
+
+    # Split: col 1 → target y, cols 2-7 → features x
+    y = Float32.(x[:, 1])         # Global_active_power (normalized)
+    x_feat = Float32.(x[:, 2:7])  # remaining 6 features
+
+    return x_feat, y
+end
+
+"""
+    cut_in_sequences_power(x, y, seq_len; inc=seq_len)
+
+Non-overlapping window segmentation (inc=seq_len by default).
+  x: (N_samples, N_features)  → seqs_x: (N_features, seq_len, N_seqs)
+  y: (N_samples,)             → seqs_y: (seq_len, N_seqs)
+"""
+function cut_in_sequences_power(x::Matrix{Float32}, y::Vector{Float32}, seq_len::Int; inc::Int=seq_len)
     n_samples = size(x, 1)
-    n_seqs = length(0:inc:(n_samples - seq_len - 1))
+    starts = 0:inc:(n_samples - seq_len - 1)
+    n_seqs = length(starts)
 
-    # Pre-allocate 3D array: (features, seq_len, n_seqs)
     seqs_x = Array{Float32, 3}(undef, size(x, 2), seq_len, n_seqs)
-    seqs_y = Matrix{Int}(undef, seq_len, n_seqs)
+    seqs_y = Matrix{Float32}(undef, seq_len, n_seqs)
 
-    idx = 0
-    for s in 0:inc:(n_samples - seq_len - 1)
-        idx += 1
+    for (idx, s) in enumerate(starts)
         start = s + 1  # Julia 1-indexed
         stop = start + seq_len - 1
-        seqs_x[:, :, idx] .= Float32.(x[start:stop, :]')   # transpose: (features, seq_len)
-        seqs_y[:, idx] .= y[start:stop]                      # (seq_len,)
+        seqs_x[:, :, idx] .= x[start:stop, :]'
+        seqs_y[:, idx] .= y[start:stop]
     end
     return seqs_x, seqs_y
 end
 
-struct HarData
-    train_x::Array{Float32, 3}    # (features, seq_len, N_train)
-    train_y::Matrix{Int}          # (seq_len, N_train)
-    valid_x::Array{Float32, 3}    # (features, seq_len, N_valid)
-    valid_y::Matrix{Int}          # (seq_len, N_valid)
-    test_x::Array{Float32, 3}     # (features, seq_len, N_test)
-    test_y::Matrix{Int}           # (seq_len, N_test)
+struct PowerData
+    train_x::Array{Float32, 3}    # (N_FEATURES, seq_len, N_train)
+    train_y::Matrix{Float32}      # (seq_len, N_train)
+    valid_x::Array{Float32, 3}
+    valid_y::Matrix{Float32}
+    test_x::Array{Float32, 3}
+    test_y::Matrix{Float32}
 end
 
-function load_har_data(; data_dir=joinpath(@__DIR__, "..", "data", "har", "UCI HAR Dataset"))
-    println("Loading HAR data from: $data_dir")
+function load_power_data(; data_dir=joinpath(@__DIR__, "..", "data", "power"))
+    println("Loading Power data from: $data_dir")
 
-    # Load raw data
-    train_x_raw = readdlm(joinpath(data_dir, "train", "X_train.txt"), Float64)
-    train_y_raw = Int.(vec(readdlm(joinpath(data_dir, "train", "y_train.txt"), Int)))
-    # Labels are 1-6 in file; keep as-is for Julia 1-indexing
-    test_x_raw = readdlm(joinpath(data_dir, "test", "X_test.txt"), Float64)
-    test_y_raw = Int.(vec(readdlm(joinpath(data_dir, "test", "y_test.txt"), Int)))
+    filepath = joinpath(data_dir, "household_power_consumption.txt")
+    x, y = load_power_trace(filepath)
+    println("  Features: $(size(x, 2)), Target: 1 (Global_active_power)")
 
-    println("  Raw train: $(size(train_x_raw, 1)) samples × $(size(train_x_raw, 2)) features")
-    println("  Raw test:  $(size(test_x_raw, 1)) samples × $(size(test_x_raw, 2)) features")
+    # Non-overlapping windows (inc=seq_len, matching Python)
+    seqs_x, seqs_y = cut_in_sequences_power(x, y, SEQ_LEN; inc=SEQ_LEN)
+    total_seqs = size(seqs_x, 3)
+    println("  Total sequences (non-overlapping): $total_seqs")
 
-    # Window into sequences — now returns 3D arrays
-    train_seqs_x, train_seqs_y = cut_in_sequences(train_x_raw, train_y_raw, SEQ_LEN; inc=1)
-    test_seqs_x, test_seqs_y = cut_in_sequences(test_x_raw, test_y_raw, SEQ_LEN; inc=8)
+    # 75/10/15 split with fixed seed (matching Python)
+    perm = randperm(MersenneTwister(23489), total_seqs)
+    valid_size = Int(floor(0.1 * total_seqs))
+    test_size  = Int(floor(0.15 * total_seqs))
 
-    println("  Total training sequences: $(size(train_seqs_x, 3))")
-    println("  Total test sequences:     $(size(test_seqs_x, 3))")
+    valid_idx = perm[1:valid_size]
+    test_idx  = perm[valid_size+1:valid_size+test_size]
+    train_idx = perm[valid_size+test_size+1:end]
 
-    # Validation split (10%, fixed seed matching Python)
-    n_total = size(train_seqs_x, 3)
-    perm = randperm(MersenneTwister(893429), n_total)
-    n_valid = div(n_total, 10)
+    println("  Train: $(length(train_idx)), Valid: $(length(valid_idx)), Test: $(length(test_idx))")
 
-    valid_idx = perm[1:n_valid]
-    train_idx = perm[n_valid+1:end]
-
-    println("  Validation split: $n_valid, training split: $(length(train_idx))")
-
-    return HarData(
-        train_seqs_x[:, :, train_idx], train_seqs_y[:, train_idx],
-        train_seqs_x[:, :, valid_idx], train_seqs_y[:, valid_idx],
-        test_seqs_x, test_seqs_y,
+    return PowerData(
+        seqs_x[:, :, train_idx], seqs_y[:, train_idx],
+        seqs_x[:, :, valid_idx], seqs_y[:, valid_idx],
+        seqs_x[:, :, test_idx],  seqs_y[:, test_idx],
     )
 end
 
@@ -189,111 +250,86 @@ end
 
 function build_model(args, rng)
     cell, ps_cell, st_cell = build_cell(args.model, args.model_size, N_FEATURES, args, rng)
-    head = Lux.Dense(hidden_size(cell) => N_CLASSES;
+    head = Lux.Dense(hidden_size(cell) => N_OUT;
         init_weight=Lux.glorot_uniform, init_bias=Lux.zeros32)
     ps_head, st_head = Lux.setup(rng, head)
 
     return cell, head, ps_cell, st_cell, ps_head, st_head
 end
 
-# ── Batched forward pass ────────────────────────────────────────────────
-# x_batch: (features, seq_len, B)
-# Returns: logits (N_CLASSES, B)
+# ── Batched forward pass (per-timestep regression) ─────────────────────
 function forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
     B = size(x_batch, 3)
-    S = initial_state(cell, B)   # (state_dim, B)
+    T = size(x_batch, 2)
+    S = initial_state(cell, B)
 
-    for t in 1:size(x_batch, 2)
-        u_t = @view x_batch[:, t, :]   # (features, B)
+    buf = Zygote.Buffer(x_batch, T, B)
+
+    for t in 1:T
+        u_t = @view x_batch[:, t, :]
         st_d = merge(st_cell, (input = u_t,))
-        S, _ = cell(S, ps_cell, st_d)   # batched dispatch → (state_dim, B)
+        S, _ = cell(S, ps_cell, st_d)
+
+        obs = readout(cell, S, ps_cell)
+        out, _ = head(obs, ps_head, st_head)  # (1, B)
+        buf[t, :] = out[1, :]
     end
 
-    # Readout: extract (n, B) observation from full state
-    obs = readout(cell, S, ps_cell)
-
-    # Dense head: (n, B) → (N_CLASSES, B)
-    logits, _ = head(obs, ps_head, st_head)
-    return logits
+    return copy(buf)
 end
 
-# ── Batched cross-entropy loss ──────────────────────────────────────────
-# Stable vectorized cross-entropy over the batch
-function batch_loss(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch, y_labels)
-    logits = forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
-    # logits: (N_CLASSES, B), y_labels: (B,) — last time step labels, 1-indexed
-
-    # log-softmax along class dimension (dim=1)
-    log_probs = logits .- logsumexp_batch(logits)  # (N_CLASSES, B)
-
-    # Gather the log-prob for the correct class per sample
-    B = length(y_labels)
-    loss = zero(eltype(logits))
-    for i in 1:B
-        loss -= log_probs[y_labels[i], i]
-    end
-    return loss / B
-end
-
-# Stable logsumexp over dim=1 for a matrix
-function logsumexp_batch(x::AbstractMatrix)
-    m = maximum(x, dims=1)   # (1, B)
-    return m .+ log.(sum(exp.(x .- m), dims=1))  # (1, B)
-end
-
-# Keep the vector version for backward compatibility
-function logsumexp(x::AbstractVector)
-    m = maximum(x)
-    return m + log(sum(exp.(x .- m)))
+# ── Batched MSE loss (per-timestep) ────────────────────────────────────
+function batch_mse_loss(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch, y_batch)
+    preds = forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, x_batch)
+    return mean((preds .- y_batch) .^ 2)
 end
 
 # ═══════════════════════════════════════════════════════════════════════
-# EVALUATION (batched)
+# EVALUATION
 # ═══════════════════════════════════════════════════════════════════════
 
 function evaluate(cell, head, ps_cell, ps_head, st_cell, st_head,
-                  data_x::Array{Float32, 3}, data_y::Matrix{Int};
+                  data_x::Array{Float32, 3}, data_y::Matrix{Float32};
                   eval_batch_size::Int=128)
     n = size(data_x, 3)
-    total_loss = 0.0f0
-    correct = 0
+    total_se = 0.0f0
+    total_ae = 0.0f0
+    total_count = 0
 
-    n_batches = cld(n, eval_batch_size)  # ceiling division
+    n_batches = cld(n, eval_batch_size)
     for b in 1:n_batches
         b_start = (b - 1) * eval_batch_size + 1
         b_end = min(b * eval_batch_size, n)
         batch_x = @view data_x[:, :, b_start:b_end]
-        batch_labels = @view data_y[end, b_start:b_end]   # last time step
+        batch_y = @view data_y[:, b_start:b_end]
         B = b_end - b_start + 1
 
-        logits = forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, batch_x)
-        # Loss
-        log_probs = logits .- logsumexp_batch(logits)
-        for i in 1:B
-            total_loss -= log_probs[batch_labels[i], i]
-        end
-        # Accuracy
-        preds = vec(getindex.(argmax(logits, dims=1), 1))
-        correct += sum(preds .== batch_labels)
+        preds = forward_batch(cell, head, ps_cell, ps_head, st_cell, st_head, batch_x)
+        diff = preds .- batch_y
+        total_se += sum(diff .^ 2)
+        total_ae += sum(abs.(diff))
+        total_count += SEQ_LEN * B
     end
 
-    return total_loss / n, correct / n
+    mse = total_se / total_count
+    mae = total_ae / total_count
+    return mse, mae
 end
 
 # ═══════════════════════════════════════════════════════════════════════
 # CHECKPOINTING
 # ═══════════════════════════════════════════════════════════════════════
 
-function save_checkpoint(path, params, opt_state, epoch, best_valid_acc, args)
+function save_checkpoint(path, params, opt_state, epoch, best_valid_mse, args)
     mkpath(dirname(path))
     jldsave(path;
         params = params,
         opt_state = opt_state,
         epoch = epoch,
-        best_valid_acc = best_valid_acc,
+        best_valid_mse = best_valid_mse,
         args = args,
     )
-    println("  💾 Checkpoint saved: $path (epoch $epoch, valid acc $(round(best_valid_acc * 100; digits=2))%)")
+    println("  💾 Checkpoint saved: $path (epoch $epoch, valid MSE $(round(best_valid_mse; digits=6)))")
 end
 
 function load_checkpoint(path)
@@ -302,47 +338,35 @@ function load_checkpoint(path)
             params = f["params"],
             opt_state = f["opt_state"],
             epoch = f["epoch"],
-            best_valid_acc = f["best_valid_acc"],
+            best_valid_mse = f["best_valid_mse"],
             args = f["args"],
         )
     end
     return data
 end
 
-"""
-    adjust_lr!(opt_state, new_lr)
-
-Walk the optimizer state tree and update Adam's learning rate.
-"""
-function adjust_lr!(opt_state, new_lr)
-    Optimisers.adjust!(opt_state, new_lr)
-end
-
 # ═══════════════════════════════════════════════════════════════════════
 # TRAINING
 # ═══════════════════════════════════════════════════════════════════════
 
-function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
-                epochs::Int=50, lr::Float32=0.01f0, batch_size::Int=16,
+function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::PowerData;
+                epochs::Int=200, lr::Float32=0.01f0, batch_size::Int=256,
                 start_epoch::Int=0, initial_opt_state=nothing,
-                initial_best_valid_acc::Float32=0.0f0,
+                initial_best_valid_mse::Float32=Inf32,
                 save_dir::String="checkpoints", save_every::Int=5,
                 warmup_epochs::Int=0, args=nothing)
 
-    # Combine parameters for gradient computation
     params = (cell = ps_cell, head = ps_head)
 
-    # Set up optimizer (or use resumed state)
     if initial_opt_state !== nothing
         opt_state = initial_opt_state
-        # Update learning rate in the existing optimizer state
         Optimisers.adjust!(opt_state, lr)
         println("  Resumed optimizer state, adjusted LR to $lr")
     else
         opt_state = Optimisers.setup(Optimisers.Adam(lr), params)
     end
 
-    best_valid_acc = initial_best_valid_acc
+    best_valid_mse = initial_best_valid_mse
     best_params = deepcopy(params)
     best_epoch = start_epoch
     best_stats = nothing
@@ -354,89 +378,75 @@ function train!(cell, head, ps_cell, ps_head, st_cell, st_head, data::HarData;
         current_lr = lr_schedule(epoch, epochs)
         Optimisers.adjust!(opt_state, current_lr)
 
-        # ── Evaluate ────────────────────────────────────────────────
-        valid_loss, valid_acc = evaluate(cell, head, params.cell, params.head,
+        # ── Evaluate
+        valid_mse, valid_mae = evaluate(cell, head, params.cell, params.head,
                                          st_cell, st_head, data.valid_x, data.valid_y)
-        test_loss, test_acc = evaluate(cell, head, params.cell, params.head,
+        test_mse, test_mae = evaluate(cell, head, params.cell, params.head,
                                        st_cell, st_head, data.test_x, data.test_y)
 
-        # ── Model selection (by valid accuracy) ─────────────────────
-        # Save BEFORE training so the checkpoint contains the params that
-        # actually produced this validation accuracy.
-        if valid_acc > best_valid_acc && epoch > start_epoch
-            best_valid_acc = valid_acc
+        # ── Model selection (by valid MSE — lower is better)
+        if valid_mse < best_valid_mse && epoch > start_epoch
+            best_valid_mse = valid_mse
             best_params = deepcopy(params)
             best_epoch = epoch
-            best_stats = (0.0f0, 0.0f0, valid_loss, valid_acc, test_loss, test_acc)
-            # Save best checkpoint
-            best_path = joinpath(save_dir, "$(args.model)_har_best.jld2")
+            best_stats = (0.0f0, 0.0f0, valid_mse, valid_mae, test_mse, test_mae)
+            best_path = joinpath(save_dir, "$(args.model)_power_best.jld2")
             save_checkpoint(best_path, best_params, opt_state, epoch,
-                            best_valid_acc, args)
+                            best_valid_mse, args)
         end
 
-        # ── Train one epoch ─────────────────────────────────────────
+        # ── Train one epoch
         perm = randperm(n_train)
         n_batches = div(n_train, batch_size)
         epoch_losses = Float32[]
-        epoch_correct = 0
-        epoch_total = 0
 
         for b in 1:n_batches
             b_start = (b - 1) * batch_size + 1
             b_end = b * batch_size
             batch_idx = perm[b_start:b_end]
 
-            # Slice the batch
-            x_batch = data.train_x[:, :, batch_idx]     # (features, seq_len, B)
-            y_batch = data.train_y[end, batch_idx]       # (B,) last time step labels
+            x_batch = data.train_x[:, :, batch_idx]
+            y_batch = data.train_y[:, batch_idx]
 
-            # Single gradient call over the whole batch
             loss_val, grads = Zygote.withgradient(params) do p
-                batch_loss(cell, head, p.cell, p.head,
-                           st_cell, st_head, x_batch, y_batch)
+                batch_mse_loss(cell, head, p.cell, p.head,
+                               st_cell, st_head, x_batch, y_batch)
             end
 
-            # Update parameters
             opt_state, params = Optimisers.update(opt_state, params, grads[1])
             push!(epoch_losses, loss_val)
 
-            # Track accuracy from the same forward pass direction (cheap — no gradient)
-            logits = forward_batch(cell, head, params.cell, params.head,
-                                    st_cell, st_head, x_batch)
-            preds = vec(getindex.(argmax(logits, dims=1), 1))
-            epoch_correct += sum(preds .== y_batch)
-            epoch_total += batch_size
+            if b == 1 || b % 50 == 0
+                @printf("  [batch %d/%d] loss: %.4f\n", b, n_batches, loss_val)
+                flush(stdout)
+            end
         end
 
         train_loss = mean(epoch_losses)
-        train_acc = epoch_correct / max(epoch_total, 1)
 
-
-        # ── Periodic checkpoint ──────────────────────────────────────
+        # ── Periodic checkpoint
         if save_every > 0 && epoch > start_epoch && epoch % save_every == 0
-            periodic_path = joinpath(save_dir, "$(args.model)_har_epoch_$(lpad(epoch, 3, '0')).jld2")
+            periodic_path = joinpath(save_dir, "$(args.model)_power_epoch_$(lpad(epoch, 3, '0')).jld2")
             save_checkpoint(periodic_path, params, opt_state, epoch,
-                            best_valid_acc, args)
+                            best_valid_mse, args)
         end
 
-        # ── Log ─────────────────────────────────────────────────────
-        @printf("Epochs %03d, train loss: %0.2f, train accuracy: %0.2f%%, valid loss: %0.2f, valid accuracy: %0.2f%%, test loss: %0.2f, test accuracy: %0.2f%%\n",
-            epoch, train_loss, train_acc * 100,
-            valid_loss, valid_acc * 100,
-            test_loss, test_acc * 100)
+        # ── Log
+        @printf("Epochs %03d, train loss: %0.4f, valid loss: %0.4f, valid mae: %0.4f, test loss: %0.4f, test mae: %0.4f\n",
+            epoch, train_loss,
+            valid_mse, valid_mae,
+            test_mse, test_mae)
 
-        # Early stopping on NaN
         if !isfinite(train_loss)
             println("NaN detected, stopping training.")
             break
         end
     end
 
-    # Print best epoch
     if best_stats !== nothing
         tl, ta, vl, va, tel, tea = best_stats
-        @printf("Best epoch %03d, train loss: %0.2f, train accuracy: %0.2f%%, valid loss: %0.2f, valid accuracy: %0.2f%%, test loss: %0.2f, test accuracy: %0.2f%%\n",
-            best_epoch, tl, ta * 100, vl, va * 100, tel, tea * 100)
+        @printf("Best epoch %03d, valid loss: %0.6f, valid mae: %0.6f, test loss: %0.6f, test mae: %0.6f\n",
+            best_epoch, vl, va, tel, tea)
     end
 
     return best_params
@@ -448,33 +458,30 @@ end
 
 function main()
     args = parse_args()
-    println("HAR Training — $(uppercase(args.model)) ($(args.solver), batched BPTT)")
+    println("Power Training — $(uppercase(args.model)) ($(args.solver), batched BPTT)")
     println("  Model: $(args.model), size: $(args.model_size)")
     println("  per_neuron: $(args.per_neuron)")
     println("  SFA timescales (n_a_E): $(args.n_a), STD (n_b_E): $(args.n_b)")
     println("  Solver: $(args.solver), h: $(args.h), unfolds: $(args.unfolds)")
     println("  Readout: $(args.readout_mode)")
     println("  LR: $(args.lr), Epochs: $(args.epochs), Batch: $(args.batch_size)")
+    println("  Warmup: $(args.warmup_epochs) epochs")
     println("  Save dir: $(args.save_dir), Save every: $(args.save_every) epochs")
     if !isempty(args.resume_path)
         println("  Resuming from: $(args.resume_path)")
     end
 
-    # Seed global RNG (for batch shuffling) and create model init RNG
     Random.seed!(args.seed)
     rng = MersenneTwister(args.seed)
     println("  Random seed: $(args.seed)")
 
-    # Load data
-    data = load_har_data()
+    data = load_power_data()
 
-    # Build model
     cell, head, ps_cell, st_cell, ps_head, st_head = build_model(args, rng)
 
-    # Handle resume
     start_epoch = 0
     initial_opt_state = nothing
-    initial_best_valid_acc = 0.0f0
+    initial_best_valid_mse = Inf32
 
     if !isempty(args.resume_path)
         println("\nLoading checkpoint: $(args.resume_path)")
@@ -482,15 +489,14 @@ function main()
         ps_cell = ckpt.params.cell
         ps_head = ckpt.params.head
         initial_opt_state = ckpt.opt_state
-        start_epoch = ckpt.epoch + 1  # start from next epoch
-        initial_best_valid_acc = Float32(ckpt.best_valid_acc)
-        println("  Loaded epoch $(ckpt.epoch), best valid acc: $(round(ckpt.best_valid_acc * 100; digits=2))%")
+        start_epoch = ckpt.epoch + 1
+        initial_best_valid_mse = Float32(ckpt.best_valid_mse)
+        println("  Loaded epoch $(ckpt.epoch), best valid MSE: $(round(ckpt.best_valid_mse; digits=6))")
         println("  Resuming from epoch $start_epoch with LR $(args.lr)")
     end
 
-    # Count parameters
     n_cell_params = sum(length(getproperty(ps_cell, k)) for k in propertynames(ps_cell))
-    n_head_params = args.model_size * N_CLASSES + N_CLASSES
+    n_head_params = args.model_size * N_OUT + N_OUT
     println("  Cell params: $n_cell_params")
     println("  Head params: $n_head_params")
     println("  Total params: $(n_cell_params + n_head_params)")
@@ -498,18 +504,16 @@ function main()
         println("  State dim: $(cell.state_dim)")
     end
 
-    # Gradient smoke test (only on fresh start)
     if isempty(args.resume_path)
         println("\nGradient smoke test (batched)...")
-        test_x = data.train_x[:, :, 1:2]    # (features, seq_len, 2)
-        test_y = data.train_y[end, 1:2]      # (2,)
+        test_x = data.train_x[:, :, 1:2]
+        test_y = data.train_y[:, 1:2]
 
         test_loss, test_grads = Zygote.withgradient((cell=ps_cell, head=ps_head)) do p
-            batch_loss(cell, head, p.cell, p.head, st_cell, st_head, test_x, test_y)
+            batch_mse_loss(cell, head, p.cell, p.head, st_cell, st_head, test_x, test_y)
         end
-        println("  Initial loss: $(@sprintf("%.4f", test_loss)) (expected ~1.79 = -log(1/6))")
+        println("  Initial MSE: $(@sprintf("%.4f", test_loss)) (expected ~1.0 for z-score targets)")
 
-        # Check gradients are non-nothing
         cell_grad = test_grads[1].cell
         head_grad = test_grads[1].head
         for k in keys(cell_grad)
@@ -523,13 +527,12 @@ function main()
         println("  Head bias gradient norm: $(sum(abs2, head_grad.bias))")
     end
 
-    # Train
     println("\nStarting training...\n")
     best_params = train!(cell, head, ps_cell, ps_head, st_cell, st_head, data;
                          epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
                          start_epoch=start_epoch,
                          initial_opt_state=initial_opt_state,
-                         initial_best_valid_acc=initial_best_valid_acc,
+                         initial_best_valid_mse=initial_best_valid_mse,
                          save_dir=args.save_dir, save_every=args.save_every,
                          warmup_epochs=args.warmup_epochs, args=args)
 end
