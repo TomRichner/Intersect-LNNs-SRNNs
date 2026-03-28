@@ -39,12 +39,14 @@ Note: `Matlab/LNN/scripts/setup_paths.m` adds both `LNN/src/` and `SRNN/src/` (n
 Matlab/
   SRNN/
     src/
-      SRNNModel2.m           % Core SRNN class (base)
+      SRNNModel2.m           % Core SRNN class (ode/fused solvers, SFA + STD)
+      SRNNComparison.m       % Multi-model comparison (param diff, LLE, traces)
       SRNN_ESN_reservoir.m   % Extends SRNNModel2 for ESN/MC measurement
       RMTMatrix.m            % Random Matrix Theory connectivity (shared utility)
     scripts/
       setup_paths.m
       test_SRNN2_defaults.m
+      compare_solvers_lyapunov.m  % ODE vs fused solver comparison
       example_memory_capacity.m
   LNN/
     src/

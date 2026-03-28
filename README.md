@@ -23,6 +23,12 @@ dx/dt = (-x + W*r + u) / tau_d
 
 with auxiliary adaptation (`a`) and depression (`b`) variables. Connectivity matrices (`W`) are constructed via Random Matrix Theory (RMT) with E/I structure and spectral radius control.
 
+**Solver modes:** SRNNModel2 supports two integration methods via `solver_mode`:
+- **`'ode'`** (default) — adaptive ODE integration (ode45)
+- **`'fused'`** — semi-implicit Euler solver inspired by [Hasani et al. (2021)](Docs/LNN_docs/Hasani%20et%20al.%20-%202021%20-%20Liquid%20Time-constant%20Networks.pdf), treating linear decay terms implicitly for improved stability at larger step sizes. Configurable via `fused_substeps` (default: 6).
+
+The fused solver applies semi-implicit updates sequentially: adaptation (`a`) → depression (`b`) → dendritic state (`x`), using updated `b` in the `x` step. Benettin's Lyapunov algorithm uses the same solver for reshooting to ensure consistency.
+
 **Implementation:** [`Matlab/SRNN/src/SRNNModel2.m`](Matlab/SRNN/src/SRNNModel2.m)
 
 ### Liquid Neural Networks (LNN)
@@ -81,6 +87,34 @@ Compares three adaptation conditions — Baseline (no adaptation), SFA only, and
 **LNN comparison** ([`test_ESN_LNN.m`](Matlab/LNN/scripts/test_ESN_LNN.m)):
 Compares the LTC reservoir across spectral radius settings (R = 0.5, 1.0, 1.5), examining how the input-dependent time constants of the LTC ODE interact with reservoir stability. Includes Lyapunov exponent computation.
 
+### Solver Comparison: ODE vs Fused Semi-Implicit Euler
+
+The script [`compare_solvers_lyapunov.m`](Matlab/SRNN/scripts/compare_solvers_lyapunov.m) compares the adaptive ODE solver (ode45) against the fused semi-implicit Euler solver at multiple substep counts (4, 6, 10) using Benettin's largest Lyapunov exponent. Both solvers share identical network structure (W, W_in, stimulus) via matching `rng_seeds`.
+
+Key findings (n=300, SFA+STD, T=50s):
+
+| Solver | LLE | Runtime |
+|---|---|---|
+| ode45 | 0.287 | ~10s |
+| fused(4) | 0.376 | ~5s |
+| fused(6) | 0.283 | ~8s |
+| fused(10) | 0.220 | ~13s |
+
+The fused solver converges toward the ode45 LLE as substep count increases, with fused(6) providing a good speed/accuracy tradeoff. The **`SRNNComparison`** class ([`SRNNComparison.m`](Matlab/SRNN/src/SRNNComparison.m)) provides reusable tools for multi-model comparison:
+
+```matlab
+comp = SRNNComparison();
+comp.add(model1, 'ode45');
+comp.add(model2, 'fused(6)');
+comp.run_all();
+comp.summary();              % Summary table (LLE, solver, params)
+comp.param_diff();           % Table of differing parameters
+comp.compare_LLE();          % LLE bar chart
+comp.compare_lyapunov();     % Local Lyapunov overlay
+comp.compare_traces(1:5);    % Neuron trace overlay
+comp.save_figures(figs, names, out_dir);  % Save .fig + .png
+```
+
 ---
 
 ## Repository Structure
@@ -108,11 +142,13 @@ Intersect-LNNs-SRNNs/
 │   │
 │   ├── SRNN/
 │   │   ├── src/
-│   │   │   ├── SRNNModel2.m            # SRNN class (E/I network with SFA + STD)
+│   │   │   ├── SRNNModel2.m            # SRNN class (E/I network with SFA + STD, ode/fused solvers)
+│   │   │   ├── SRNNComparison.m        # Multi-model comparison (param diff, LLE, trace overlay)
 │   │   │   └── SRNN_ESN_reservoir.m    # (Deprecated) use ESN_reservoir instead
 │   │   └── scripts/
 │   │       ├── setup_paths.m
 │   │       ├── test_SRNN2_defaults.m    # Quick build/run/plot test
+│   │       ├── compare_solvers_lyapunov.m  # ODE vs fused solver comparison (LLE + traces)
 │   │       ├── test_ESN_SRNN.m          # ESN memory capacity (Baseline vs SFA vs STD)
 │   │       └── Fig_2_fraction_excitatory_analysis.m  # f-sweep with adaptation variants
 │   │
@@ -124,6 +160,9 @@ Intersect-LNNs-SRNNs/
 │           ├── setup_paths.m
 │           ├── test_LNN.m              # Quick build/run/plot test
 │           └── test_ESN_LNN.m          # ESN memory capacity (R=0.5, 1.0, 1.5)
+│
+│   └── figs/
+│       └── comparisons/                # Saved .fig and .png from comparison scripts
 │
 ├── Docs/
 │   ├── SRNN_docs/                      # SRNN equations, parameter tables, code structure

@@ -49,6 +49,11 @@ classdef SRNNModel2 < cRNN
         readout_mode = 'firing_rate' % ESN readout: 'firing_rate', 'state', 'full_state', 'synaptic'
     end
 
+    %% Solver Properties
+    properties
+        solver_mode = 'ode'         % Integration method: 'ode' (adaptive, e.g. ode45) or 'fused' (semi-implicit Euler)
+        fused_substeps = 6          % Number of sub-steps per dt for fused solver
+    end
 
     %% SRNN Dependent Properties
     properties (Dependent)
@@ -109,6 +114,116 @@ classdef SRNNModel2 < cRNN
             nE = obj.n_E;
             nI = obj.n_I;
             val = nE * obj.n_a_E + nI * obj.n_a_I + nE * obj.n_b_E + nI * obj.n_b_I + obj.n;
+        end
+    end
+
+    %% Overridden Lifecycle Methods
+    methods
+        function run(obj)
+            % RUN Execute SRNN simulation with ODE or fused solver.
+            %
+            % When solver_mode = 'ode', delegates to cRNN.run() (adaptive ode45).
+            % When solver_mode = 'fused', uses a semi-implicit Euler scheme
+            % inspired by Hasani et al. 2021, treating linear decay terms
+            % implicitly for improved stability at fixed step sizes.
+
+            if ~obj.is_built
+                error('SRNNModel2:NotBuilt', 'Model must be built before running. Call build() first.');
+            end
+
+            if strcmpi(obj.solver_mode, 'fused')
+                params = obj.cached_params;
+                fprintf('Running SRNN with fused solver (%d substeps per dt)...\n', obj.fused_substeps);
+                tic
+                [t_raw, S_raw] = obj.run_fused(params);
+                run_time = toc;
+                fprintf('Integration complete in %.2f seconds.\n', run_time);
+
+                obj.t_out = t_raw;
+                obj.state_out = S_raw;
+
+                % Compute Lyapunov exponents
+                if ~strcmpi(obj.lya_method, 'none')
+                    obj.compute_lyapunov();
+                    if obj.filter_local_lya
+                        obj.filter_lyapunov();
+                    end
+                end
+
+                % Decimate and unpack for plotting
+                if obj.store_decimated_state
+                    obj.decimate_and_unpack();
+                end
+
+                % Clear full state if not storing
+                if ~obj.store_full_state
+                    obj.state_out = [];
+                end
+
+                obj.has_run = true;
+                fprintf('Simulation complete.\n');
+            else
+                % Standard ODE mode — delegate to base class
+                run@cRNN(obj);
+            end
+        end
+    end
+
+    %% Overridden Lyapunov Method
+    methods
+        function compute_lyapunov(obj)
+            % COMPUTE_LYAPUNOV Compute Lyapunov exponents using the active solver.
+            %
+            % When solver_mode = 'fused', wraps the fused solver as an
+            % ode-compatible function handle so Benettin's algorithm uses
+            % the same integrator for both fiducial and perturbed trajectories.
+            % When solver_mode = 'ode', delegates to cRNN.compute_lyapunov().
+
+            if strcmpi(obj.solver_mode, 'fused')
+                if isempty(obj.state_out)
+                    error('SRNNModel2:NoStateData', 'State data not available.');
+                end
+
+                dt = 1 / obj.fs;
+                params = obj.cached_params;
+                params.u_interpolant = obj.u_interpolant;
+                sub_dt = dt / obj.fused_substeps;
+
+                % Set Lyapunov time interval (same logic as cRNN)
+                if isempty(obj.lya_T_interval)
+                    if obj.T_range(2) >= 15
+                        obj.lya_T_interval = [obj.T_range(1) + 15, obj.T_range(2)];
+                    else
+                        obj.lya_T_interval = [obj.T_range(1), obj.T_range(2)];
+                    end
+                end
+
+                % Create fused solver wrapper with ode-compatible signature:
+                %   [t_out, S_out] = solver(rhs, tspan, S0, opts)
+                % The rhs argument is ignored — fused_step has its own dynamics.
+                fused_substep_dt = sub_dt;
+                fused_solver = @(~, tspan, S0, ~) ...
+                    SRNNModel2.fused_integrate(tspan, S0, fused_substep_dt, params);
+
+                % Build RHS and Jacobian (RHS unused by fused_solver but
+                % needed by the dispatcher; Jacobian used by QR method)
+                rhs = obj.get_rhs(params);
+                jac_wrapper = @(tt, S, p) obj.get_jacobian(S, p);
+
+                fprintf('Computing Lyapunov exponents using %s method\n', obj.lya_method);
+                n_state = obj.get_n_state();
+                obj.lya_results = cRNN.compute_lyapunov_exponents_internal( ...
+                    obj.lya_method, obj.state_out, obj.t_out, dt, obj.fs, ...
+                    obj.lya_T_interval, params, obj.ode_opts, fused_solver, ...
+                    rhs, obj.t_ex, obj.u_ex, jac_wrapper, n_state, obj);
+
+                if isfield(obj.lya_results, 'LLE')
+                    fprintf('Largest Lyapunov Exponent: %.4f\n', obj.lya_results.LLE);
+                end
+            else
+                % ODE mode — delegate to base class
+                compute_lyapunov@cRNN(obj);
+            end
         end
     end
 
@@ -468,6 +583,40 @@ classdef SRNNModel2 < cRNN
 
     %% SRNN-specific Protected Methods
     methods (Access = protected)
+        function [t_out_fused, S_out_fused] = run_fused(obj, params)
+            % RUN_FUSED Run the fused semi-implicit Euler solver for SRNN.
+            %
+            % Integrates the SRNN ODE system using a fixed-step semi-implicit
+            % Euler scheme. Each main timestep (1/fs) is subdivided into
+            % fused_substeps sub-steps for accuracy.
+            %
+            % Returns:
+            %   t_out_fused  - Time vector (nt x 1)
+            %   S_out_fused  - State trajectory (nt x N_sys_eqs)
+
+            dt = 1 / obj.fs;
+            sub_dt = dt / obj.fused_substeps;
+            nt = length(obj.t_ex);
+            N = params.N_sys_eqs;
+
+            S_out_fused = zeros(nt, N);
+            S_out_fused(1, :) = obj.S0';
+            S_curr = obj.S0;  % column vector (N x 1)
+
+            params.u_interpolant = obj.u_interpolant;
+
+            for k = 1:(nt - 1)
+                t_k = obj.t_ex(k);
+                for s = 1:obj.fused_substeps
+                    t_sub = t_k + (s - 1) * sub_dt;
+                    S_curr = SRNNModel2.fused_step(t_sub, S_curr, sub_dt, params);
+                end
+                S_out_fused(k + 1, :) = S_curr';
+            end
+
+            t_out_fused = obj.t_ex(:);
+        end
+
         function decimate_and_unpack(obj)
             % DECIMATE_AND_UNPACK Decimate state data and unpack for plotting
 
@@ -979,6 +1128,141 @@ classdef SRNNModel2 < cRNN
             %% Pack derivatives
             dS_dt = [da_E_dt(:); da_I_dt(:); db_E_dt(:); db_I_dt(:); dx_dt];
         end
+
+        function S_new = fused_step(t, S, dt, params)
+            % FUSED_STEP One step of the semi-implicit Euler solver for SRNN.
+            %
+            % Implements a semi-implicit (fused) discretization inspired by
+            % Hasani et al. 2021. Linear decay terms in each state variable
+            % are treated implicitly for improved stability:
+            %
+            %   a_{n+1} = (a_n + dt*(c_0 + r_n)/tau_a) / (1 + dt/tau_a)
+            %   b_{n+1} = (b_n + dt/tau_rec) / (1 + dt*(1/tau_rec + r_n/tau_rel))
+            %   x_{n+1} = (x_n + dt*(W*(b_{n+1}.*r_n) + u)/tau_d) / (1 + dt/tau_d)
+            %
+            % Update order: compute r → update a → update b → update x
+            % (x uses the freshly updated b for better implicit coupling)
+            %
+            % Inputs:
+            %   t      - Current time (s), used to interpolate external input
+            %   S      - State vector (N_sys_eqs x 1)
+            %   dt     - Sub-step size (s)
+            %   params - Parameter struct (must include u_interpolant and W_in)
+
+            %% Interpolate external input (same as dynamics_fast)
+            u_raw = params.u_interpolant(t)';  % (n_in x 1)
+            u = params.W_in * u_raw;           % (n x 1)
+
+            %% Load parameters
+            n = params.n;
+            n_E = params.n_E;
+            n_I = params.n_I;
+            E_indices = params.E_indices;
+            I_indices = params.I_indices;
+
+            n_a_E = params.n_a_E;
+            n_a_I = params.n_a_I;
+            n_b_E = params.n_b_E;
+            n_b_I = params.n_b_I;
+
+            W = params.W;
+            tau_d = params.tau_d;
+            tau_a_E = params.tau_a_E;
+            tau_a_I = params.tau_a_I;
+            tau_b_E_rec = params.tau_b_E_rec;
+            tau_b_E_rel = params.tau_b_E_rel;
+            tau_b_I_rec = params.tau_b_I_rec;
+            tau_b_I_rel = params.tau_b_I_rel;
+
+            c_E = params.c_E;
+            c_I = params.c_I;
+            c_0_E = params.c_0_E;
+            c_0_I = params.c_0_I;
+            activation_fn = params.activation_function;
+
+            %% Unpack state variables (same indexing as dynamics_fast)
+            current_idx = 0;
+
+            len_a_E = n_E * n_a_E;
+            if len_a_E > 0
+                a_E = reshape(S(current_idx + (1:len_a_E)), n_E, n_a_E);
+            else
+                a_E = [];
+            end
+            current_idx = current_idx + len_a_E;
+
+            len_a_I = n_I * n_a_I;
+            if len_a_I > 0
+                a_I = reshape(S(current_idx + (1:len_a_I)), n_I, n_a_I);
+            else
+                a_I = [];
+            end
+            current_idx = current_idx + len_a_I;
+
+            len_b_E = n_E * n_b_E;
+            if len_b_E > 0
+                b_E = S(current_idx + (1:len_b_E));
+            else
+                b_E = [];
+            end
+            current_idx = current_idx + len_b_E;
+
+            len_b_I = n_I * n_b_I;
+            if len_b_I > 0
+                b_I = S(current_idx + (1:len_b_I));
+            else
+                b_I = [];
+            end
+            current_idx = current_idx + len_b_I;
+
+            x = S(current_idx + (1:n));
+
+            %% Compute firing rate from current state
+            x_eff = x;
+            if n_E > 0 && n_a_E > 0 && ~isempty(a_E)
+                x_eff(E_indices) = x_eff(E_indices) - c_E * sum(a_E, 2);
+            end
+            if n_I > 0 && n_a_I > 0 && ~isempty(a_I)
+                x_eff(I_indices) = x_eff(I_indices) - c_I * sum(a_I, 2);
+            end
+
+            r = activation_fn(x_eff);
+
+            %% Step 1: Update adaptation (a) — semi-implicit on -a/tau_a
+            if n_E > 0 && n_a_E > 0 && ~isempty(a_E)
+                % a_E: (n_E x n_a_E), tau_a_E: (1 x n_a_E), r(E_indices): (n_E x 1)
+                % Broadcasting: (c_0_E + r) is (n_E x 1) ./ tau_a_E is (1 x n_a_E)
+                a_E = (a_E + dt * (c_0_E + r(E_indices)) ./ tau_a_E) ./ (1 + dt ./ tau_a_E);
+            end
+            if n_I > 0 && n_a_I > 0 && ~isempty(a_I)
+                a_I = (a_I + dt * (c_0_I + r(I_indices)) ./ tau_a_I) ./ (1 + dt ./ tau_a_I);
+            end
+
+            %% Step 2: Update depression (b) — semi-implicit on -b*(1/tau_rec + r/tau_rel)
+            if n_E > 0 && n_b_E > 0 && ~isempty(b_E)
+                b_E = (b_E + dt / tau_b_E_rec) ./ (1 + dt * (1/tau_b_E_rec + r(E_indices)/tau_b_E_rel));
+                b_E = max(0, min(1, b_E));  % Clamp to physical range
+            end
+            if n_I > 0 && n_b_I > 0 && ~isempty(b_I)
+                b_I = (b_I + dt / tau_b_I_rec) ./ (1 + dt * (1/tau_b_I_rec + r(I_indices)/tau_b_I_rel));
+                b_I = max(0, min(1, b_I));
+            end
+
+            %% Step 3: Update dendritic state (x) — semi-implicit on -x/tau_d
+            % Use updated b for better implicit coupling
+            b_vec = ones(n, 1);
+            if n_b_E > 0 && ~isempty(b_E)
+                b_vec(E_indices) = b_E;
+            end
+            if n_b_I > 0 && ~isempty(b_I)
+                b_vec(I_indices) = b_I;
+            end
+
+            x = (x + dt * (W * (b_vec .* r) + u) / tau_d) ./ (1 + dt / tau_d);
+
+            %% Repack state vector
+            S_new = [a_E(:); a_I(:); b_E(:); b_I(:); x];
+        end
     end
 
     %% ====================================================================
@@ -987,6 +1271,47 @@ classdef SRNNModel2 < cRNN
     % Internalized from src/algorithms/Jacobian/ to make SRNNModel2 standalone.
 
     methods (Static)
+        function [t_out, S_out] = fused_integrate(tspan, S0, sub_dt, params)
+            % FUSED_INTEGRATE Integrate SRNN state using fused solver over a time span.
+            %
+            % ODE-solver-compatible interface: can be passed as a function
+            % handle to Benettin's algorithm in place of ode45.
+            %
+            % Inputs:
+            %   tspan  - Time vector [t_start, ..., t_end] or [t_start, t_end]
+            %   S0     - Initial state (N_sys_eqs x 1)
+            %   sub_dt - Fused sub-step size (s)
+            %   params - Parameter struct (must include u_interpolant, W_in)
+            %
+            % Outputs:
+            %   t_out  - Time vector (same as tspan)
+            %   S_out  - State trajectory (length(tspan) x N_sys_eqs)
+
+            t_out = tspan(:);
+            nt = length(t_out);
+            N = length(S0);
+
+            S_out = zeros(nt, N);
+            S_out(1, :) = S0';
+            S_curr = S0;
+
+            for k = 1:(nt - 1)
+                t_start = t_out(k);
+                t_end = t_out(k + 1);
+                seg_dt = t_end - t_start;
+
+                % Number of substeps for this segment
+                n_sub = max(1, round(seg_dt / sub_dt));
+                actual_sub_dt = seg_dt / n_sub;
+
+                for s = 1:n_sub
+                    t_sub = t_start + (s - 1) * actual_sub_dt;
+                    S_curr = SRNNModel2.fused_step(t_sub, S_curr, actual_sub_dt, params);
+                end
+                S_out(k + 1, :) = S_curr';
+            end
+        end
+
         function J = compute_Jacobian_fast(S, params)
             % COMPUTE_JACOBIAN_FAST Sparse/vectorized Jacobian assembly for the SRNN system.
             % Internalized from src/algorithms/Jacobian/compute_Jacobian_fast.m
